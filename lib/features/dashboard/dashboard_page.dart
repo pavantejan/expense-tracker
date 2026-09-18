@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../../core/database/database_provider.dart';
-import '../transactions/add_transaction_page.dart';
+import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
+import '../transactions/add_transaction_page.dart';
 
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
@@ -12,22 +12,18 @@ class DashboardPage extends StatelessWidget {
     final theme = Theme.of(context);
 
     return StreamBuilder<List<Transaction>>(
-      stream: appDatabase.select(appDatabase.transactions).watch(),
+      stream: transactionRepository.watchAllTransactions(),
       builder: (context, snapshot) {
         final transactions = snapshot.data ?? [];
 
-        final activeTransactions = transactions
-            .where((transaction) => !transaction.deleted)
-            .toList();
-
-        final income = activeTransactions
+        final income = transactions
             .where((transaction) => transaction.type == 'Income')
             .fold<double>(
               0,
               (total, transaction) => total + transaction.amount,
             );
 
-        final expenses = activeTransactions
+        final expenses = transactions
             .where((transaction) => transaction.type == 'Expense')
             .fold<double>(
               0,
@@ -36,11 +32,13 @@ class DashboardPage extends StatelessWidget {
 
         final balance = income - expenses;
 
-        activeTransactions.sort(
-          (a, b) => b.transactionDate.compareTo(a.transactionDate),
-        );
+        final recentTransactions = [...transactions]
+          ..sort(
+            (a, b) => b.transactionDate.compareTo(a.transactionDate),
+          );
 
-        final recentTransactions = activeTransactions.take(5).toList();
+        final displayedTransactions =
+            recentTransactions.take(5).toList();
 
         return Scaffold(
           appBar: AppBar(
@@ -137,7 +135,7 @@ class DashboardPage extends StatelessWidget {
 
                 const SizedBox(height: 8),
 
-                if (recentTransactions.isEmpty)
+                if (displayedTransactions.isEmpty)
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
@@ -169,7 +167,7 @@ class DashboardPage extends StatelessWidget {
                     ),
                   )
                 else
-                  ...recentTransactions.map(
+                  ...displayedTransactions.map(
                     (transaction) => _TransactionCard(
                       transaction: transaction,
                     ),
