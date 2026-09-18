@@ -5,6 +5,9 @@ import 'package:uuid/uuid.dart';
 import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
 
+import '../../core/notifications/notification_manager.dart';
+import '../../data/notifications/notification.dart';
+
 class AddTransactionPage extends StatefulWidget {
   const AddTransactionPage({
     super.key,
@@ -136,6 +139,12 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
           syncStatus: 'pending',
         ),
       );
+      NotificationManager.instance.add(
+        type: NotificationType.transactionAdded,
+        title: 'Transaction added',
+        message: '${description.isEmpty ? _category : description} • '
+            '₹${amount.toStringAsFixed(2)}',
+      );
     } else {
       await transactionRepository.updateTransaction(
         widget.transactionId!,
@@ -151,23 +160,18 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
           notes: Value(
             notes.isEmpty ? null : notes,
           ),
-          updatedAt: Value(now),
-          syncStatus: const Value('pending'),
         ),
+      );
+
+      NotificationManager.instance.add(
+        type: NotificationType.transactionUpdated,
+        title: 'Transaction updated',
+        message: '${description.isEmpty ? _category : description} • '
+            '₹${amount.toStringAsFixed(2)}',
       );
     }
 
     if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          widget.isEditMode
-              ? 'Transaction updated successfully.'
-              : 'Transaction saved successfully.',
-        ),
-      ),
-    );
 
     Navigator.of(context).pop();
   }
