@@ -1,9 +1,8 @@
-import 'package:flutter/material.dart';
-
 import 'package:drift/drift.dart';
+import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../core/database/database_provider.dart';
+import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
 
 class AddTransactionPage extends StatefulWidget {
@@ -18,7 +17,6 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   String _category = 'Food';
   String _paymentMethod = 'UPI';
   DateTime _selectedDate = DateTime.now();
-  
 
   final _amountController = TextEditingController();
   final _descriptionController = TextEditingController();
@@ -65,6 +63,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       });
     }
   }
+
   Future<void> _saveTransaction() async {
     final amount = double.tryParse(_amountController.text.trim());
 
@@ -78,8 +77,8 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
     }
 
     final now = DateTime.now();
-    
-    await appDatabase.into(appDatabase.transactions).insert(
+
+    await transactionRepository.addTransaction(
       TransactionsCompanion.insert(
         uuid: _uuid.v4(),
         type: _type,
