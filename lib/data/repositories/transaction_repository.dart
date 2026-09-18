@@ -19,6 +19,12 @@ class TransactionRepository {
         .watch();
   }
 
+  Future<Transaction?> getTransactionById(int id) {
+    return (_database.select(_database.transactions)
+          ..where((t) => t.id.equals(id)))
+        .getSingleOrNull();
+  }
+
   Future<int> addTransaction(TransactionsCompanion transaction) {
     return _database.into(_database.transactions).insert(transaction);
   }
