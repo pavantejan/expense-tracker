@@ -477,6 +477,9 @@ class _TransactionCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         onTap: onTap,
+        onLongPress: () {
+          _showDeleteConfirmation(context, transaction);
+        },
         leading: CircleAvatar(
           child: Icon(
             isIncome
@@ -501,4 +504,56 @@ class _TransactionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _showDeleteConfirmation(
+  BuildContext context,
+  Transaction transaction,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text('Delete transaction?'),
+        content: Text(
+          'Are you sure you want to delete '
+          '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} '
+          'for ₹${transaction.amount.toStringAsFixed(2)}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop(false);
+            },
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop(true);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirmed != true || !context.mounted) {
+    return;
+  }
+
+  final deleted = await transactionRepository.deleteTransaction(
+    transaction.id,
+  );
+
+  if (!deleted || !context.mounted) {
+    return;
+  }
+
+  NotificationManager.instance.add(
+    type: NotificationType.transactionDeleted,
+    title: 'Transaction deleted',
+    message: '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
+        '₹${transaction.amount.toStringAsFixed(2)}',
+  );
 }
