@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../features/dashboard/dashboard_page.dart';
 import 'theme/app_theme.dart';
 
 class ExpenseTrackerApp extends StatelessWidget {
@@ -13,11 +14,7 @@ class ExpenseTrackerApp extends StatelessWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: ThemeMode.system,
-      home: const Scaffold(
-        body: Center(
-          child: Text('Expense Tracker'),
-        ),
-      ),
+      home: const DashboardPage(),
     );
   }
 }
