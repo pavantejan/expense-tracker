@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../core/database/database_provider.dart';
 import '../transactions/add_transaction_page.dart';
+import '../../data/database/app_database.dart';
 
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
@@ -9,146 +11,190 @@ class DashboardPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Expense Tracker',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          IconButton(
-            onPressed: () {},
-            icon: const Icon(Icons.search_rounded),
-            tooltip: 'Search',
-          ),
-          IconButton(
-            onPressed: () {},
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Settings',
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text(
-              'September 2026',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 16),
+    return StreamBuilder<List<Transaction>>(
+      stream: appDatabase.select(appDatabase.transactions).watch(),
+      builder: (context, snapshot) {
+        final transactions = snapshot.data ?? [];
 
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        final activeTransactions = transactions
+            .where((transaction) => !transaction.deleted)
+            .toList();
+
+        final income = activeTransactions
+            .where((transaction) => transaction.type == 'Income')
+            .fold<double>(
+              0,
+              (total, transaction) => total + transaction.amount,
+            );
+
+        final expenses = activeTransactions
+            .where((transaction) => transaction.type == 'Expense')
+            .fold<double>(
+              0,
+              (total, transaction) => total + transaction.amount,
+            );
+
+        final balance = income - expenses;
+
+        activeTransactions.sort(
+          (a, b) => b.transactionDate.compareTo(a.transactionDate),
+        );
+
+        final recentTransactions = activeTransactions.take(5).toList();
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text(
+              'Expense Tracker',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            actions: [
+              IconButton(
+                onPressed: () {},
+                icon: const Icon(Icons.search_rounded),
+                tooltip: 'Search',
+              ),
+              IconButton(
+                onPressed: () {},
+                icon: const Icon(Icons.settings_outlined),
+                tooltip: 'Settings',
+              ),
+            ],
+          ),
+          body: SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Text(
+                  'September 2026',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Balance',
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _formatAmount(balance),
+                          style: theme.textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SummaryCard(
+                        title: 'Income',
+                        amount: _formatAmount(income),
+                        icon: Icons.arrow_downward_rounded,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _SummaryCard(
+                        title: 'Expenses',
+                        amount: _formatAmount(expenses),
+                        icon: Icons.arrow_upward_rounded,
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 28),
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Balance',
-                      style: theme.textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '₹0.00',
-                      style: theme.textTheme.headlineMedium?.copyWith(
+                      'Recent Transactions',
+                      style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
                     ),
+                    TextButton(
+                      onPressed: () {},
+                      child: const Text('View all'),
+                    ),
                   ],
                 ),
-              ),
-            ),
 
-            const SizedBox(height: 12),
+                const SizedBox(height: 8),
 
-            Row(
-              children: [
-                Expanded(
-                  child: _SummaryCard(
-                    title: 'Income',
-                    amount: '₹0.00',
-                    icon: Icons.arrow_downward_rounded,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _SummaryCard(
-                    title: 'Expenses',
-                    amount: '₹0.00',
-                    icon: Icons.arrow_upward_rounded,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 28),
-
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Recent Transactions',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                TextButton(
-                  onPressed: () {},
-                  child: const Text('View all'),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 32,
-                  horizontal: 20,
-                ),
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.receipt_long_outlined,
-                      size: 48,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'No transactions yet',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
+                if (recentTransactions.isEmpty)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 32,
+                        horizontal: 20,
+                      ),
+                      child: Column(
+                        children: [
+                          Icon(
+                            Icons.receipt_long_outlined,
+                            size: 48,
+                            color: theme.colorScheme.primary,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'No transactions yet',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Add your first expense or income.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodyMedium,
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Add your first expense or income.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium,
+                  )
+                else
+                  ...recentTransactions.map(
+                    (transaction) => _TransactionCard(
+                      transaction: transaction,
                     ),
-                  ],
+                  ),
+              ],
+            ),
+          ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const AddTransactionPage(),
                 ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => const AddTransactionPage(),
-            ),
-          );
-        },
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Add Transaction'),
-      ),
+              );
+            },
+            icon: const Icon(Icons.add_rounded),
+            label: const Text('Add Transaction'),
+          ),
+        );
+      },
     );
+  }
+
+  String _formatAmount(double amount) {
+    return '₹${amount.toStringAsFixed(2)}';
   }
 }
 
@@ -185,6 +231,46 @@ class _SummaryCard extends StatelessWidget {
                   ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TransactionCard extends StatelessWidget {
+  const _TransactionCard({
+    required this.transaction,
+  });
+
+  final Transaction transaction;
+
+  @override
+  Widget build(BuildContext context) {
+    final isIncome = transaction.type == 'Income';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          child: Icon(
+            isIncome
+                ? Icons.arrow_downward_rounded
+                : Icons.arrow_upward_rounded,
+          ),
+        ),
+        title: Text(
+          transaction.description?.isNotEmpty == true
+              ? transaction.description!
+              : transaction.category,
+        ),
+        subtitle: Text(
+          '${transaction.category} • ${transaction.paymentMethod}',
+        ),
+        trailing: Text(
+          '${isIncome ? '+' : '-'}₹${transaction.amount.toStringAsFixed(2)}',
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
     );

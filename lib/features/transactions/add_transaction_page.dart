@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'package:drift/drift.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../core/database/database_provider.dart';
+import '../../data/database/app_database.dart';
+
 class AddTransactionPage extends StatefulWidget {
   const AddTransactionPage({super.key});
 
@@ -12,10 +18,12 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   String _category = 'Food';
   String _paymentMethod = 'UPI';
   DateTime _selectedDate = DateTime.now();
+  
 
   final _amountController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _notesController = TextEditingController();
+  final _uuid = const Uuid();
 
   final _categories = [
     'Food',
@@ -56,6 +64,54 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
         _selectedDate = picked;
       });
     }
+  }
+  Future<void> _saveTransaction() async {
+    final amount = double.tryParse(_amountController.text.trim());
+
+    if (amount == null || amount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid amount.'),
+        ),
+      );
+      return;
+    }
+
+    final now = DateTime.now();
+    
+    await appDatabase.into(appDatabase.transactions).insert(
+      TransactionsCompanion.insert(
+        uuid: _uuid.v4(),
+        type: _type,
+        amount: amount,
+        category: _category,
+        description: Value(
+          _descriptionController.text.trim().isEmpty
+              ? null
+              : _descriptionController.text.trim(),
+        ),
+        paymentMethod: _paymentMethod,
+        transactionDate: _selectedDate,
+        notes: Value(
+          _notesController.text.trim().isEmpty
+              ? null
+              : _notesController.text.trim(),
+        ),
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: 'pending',
+      ),
+    );
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Transaction saved successfully.'),
+      ),
+    );
+
+    Navigator.of(context).pop();
   }
 
   @override
@@ -214,7 +270,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
             SizedBox(
               height: 52,
               child: FilledButton.icon(
-                onPressed: () {},
+                onPressed: _saveTransaction,
                 icon: const Icon(Icons.check_rounded),
                 label: const Text('Save Transaction'),
               ),
