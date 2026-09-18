@@ -170,6 +170,15 @@ class DashboardPage extends StatelessWidget {
                   ...displayedTransactions.map(
                     (transaction) => _TransactionCard(
                       transaction: transaction,
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AddTransactionPage(
+                              transactionId: transaction.id,
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
               ],
@@ -238,9 +247,11 @@ class _SummaryCard extends StatelessWidget {
 class _TransactionCard extends StatelessWidget {
   const _TransactionCard({
     required this.transaction,
+    required this.onTap,
   });
 
   final Transaction transaction;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -249,6 +260,7 @@ class _TransactionCard extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
+        onTap: onTap,
         leading: CircleAvatar(
           child: Icon(
             isIncome

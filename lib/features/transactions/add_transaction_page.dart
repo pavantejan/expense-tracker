@@ -6,7 +6,14 @@ import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
 
 class AddTransactionPage extends StatefulWidget {
-  const AddTransactionPage({super.key});
+  const AddTransactionPage({
+    super.key,
+    this.transactionId,
+  });
+
+  final int? transactionId;
+
+  bool get isEditMode => transactionId != null;
 
   @override
   State<AddTransactionPage> createState() => _AddTransactionPageState();
@@ -21,6 +28,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   final _amountController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _notesController = TextEditingController();
+
   final _uuid = const Uuid();
 
   final _categories = [
@@ -42,11 +50,39 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+
+    if (widget.transactionId != null) {
+      _loadTransaction(widget.transactionId!);
+    }
+  }
+
+  @override
   void dispose() {
     _amountController.dispose();
     _descriptionController.dispose();
     _notesController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadTransaction(int id) async {
+    final transaction = await transactionRepository.getTransactionById(id);
+
+    if (!mounted || transaction == null) {
+      return;
+    }
+
+    setState(() {
+      _type = transaction.type;
+      _category = transaction.category;
+      _paymentMethod = transaction.paymentMethod;
+      _selectedDate = transaction.transactionDate;
+
+      _amountController.text = transaction.amount.toString();
+      _descriptionController.text = transaction.description ?? '';
+      _notesController.text = transaction.notes ?? '';
+    });
   }
 
   Future<void> _selectDate() async {
@@ -76,37 +112,60 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       return;
     }
 
+    final description = _descriptionController.text.trim();
+    final notes = _notesController.text.trim();
     final now = DateTime.now();
 
-    await transactionRepository.addTransaction(
-      TransactionsCompanion.insert(
-        uuid: _uuid.v4(),
-        type: _type,
-        amount: amount,
-        category: _category,
-        description: Value(
-          _descriptionController.text.trim().isEmpty
-              ? null
-              : _descriptionController.text.trim(),
+    if (widget.transactionId == null) {
+      await transactionRepository.addTransaction(
+        TransactionsCompanion.insert(
+          uuid: _uuid.v4(),
+          type: _type,
+          amount: amount,
+          category: _category,
+          description: Value(
+            description.isEmpty ? null : description,
+          ),
+          paymentMethod: _paymentMethod,
+          transactionDate: _selectedDate,
+          notes: Value(
+            notes.isEmpty ? null : notes,
+          ),
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: 'pending',
         ),
-        paymentMethod: _paymentMethod,
-        transactionDate: _selectedDate,
-        notes: Value(
-          _notesController.text.trim().isEmpty
-              ? null
-              : _notesController.text.trim(),
+      );
+    } else {
+      await transactionRepository.updateTransaction(
+        widget.transactionId!,
+        TransactionsCompanion(
+          type: Value(_type),
+          amount: Value(amount),
+          category: Value(_category),
+          description: Value(
+            description.isEmpty ? null : description,
+          ),
+          paymentMethod: Value(_paymentMethod),
+          transactionDate: Value(_selectedDate),
+          notes: Value(
+            notes.isEmpty ? null : notes,
+          ),
+          updatedAt: Value(now),
+          syncStatus: const Value('pending'),
         ),
-        createdAt: now,
-        updatedAt: now,
-        syncStatus: 'pending',
-      ),
-    );
+      );
+    }
 
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Transaction saved successfully.'),
+      SnackBar(
+        content: Text(
+          widget.isEditMode
+              ? 'Transaction updated successfully.'
+              : 'Transaction saved successfully.',
+        ),
       ),
     );
 
@@ -115,13 +174,12 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Add Transaction',
-          style: TextStyle(fontWeight: FontWeight.bold),
+        title: Text(
+          widget.isEditMode
+              ? 'Edit Transaction'
+              : 'Add Transaction',
         ),
       ),
       body: SafeArea(
@@ -130,12 +188,12 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
           children: [
             SegmentedButton<String>(
               segments: const [
-                ButtonSegment(
+                ButtonSegment<String>(
                   value: 'Expense',
                   label: Text('Expense'),
                   icon: Icon(Icons.arrow_upward_rounded),
                 ),
-                ButtonSegment(
+                ButtonSegment<String>(
                   value: 'Income',
                   label: Text('Income'),
                   icon: Icon(Icons.arrow_downward_rounded),
@@ -148,31 +206,19 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                 });
               },
             ),
-
-            const SizedBox(height: 24),
-
-            Text(
-              'Amount',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 8),
-
+            const SizedBox(height: 20),
             TextField(
               controller: _amountController,
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
               decoration: const InputDecoration(
+                labelText: 'Amount',
                 prefixText: '₹ ',
-                hintText: '0.00',
                 border: OutlineInputBorder(),
               ),
             ),
-
-            const SizedBox(height: 20),
-
+            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               initialValue: _category,
               decoration: const InputDecoration(
@@ -195,9 +241,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                 }
               },
             ),
-
-            const SizedBox(height: 20),
-
+            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               initialValue: _paymentMethod,
               decoration: const InputDecoration(
@@ -220,58 +264,53 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                 }
               },
             ),
-
-            const SizedBox(height: 20),
-
+            const SizedBox(height: 16),
             TextField(
               controller: _descriptionController,
-              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'Description',
-                hintText: 'What was this transaction for?',
                 border: OutlineInputBorder(),
               ),
             ),
-
-            const SizedBox(height: 20),
-
-            InkWell(
-              onTap: _selectDate,
-              borderRadius: BorderRadius.circular(12),
-              child: InputDecorator(
-                decoration: const InputDecoration(
-                  labelText: 'Date',
-                  border: OutlineInputBorder(),
-                  suffixIcon: Icon(Icons.calendar_today_outlined),
-                ),
-                child: Text(
-                  '${_selectedDate.day.toString().padLeft(2, '0')}/'
-                  '${_selectedDate.month.toString().padLeft(2, '0')}/'
-                  '${_selectedDate.year}',
-                ),
+            const SizedBox(height: 16),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.calendar_today_outlined),
+              title: const Text('Date'),
+              subtitle: Text(
+                '${_selectedDate.day.toString().padLeft(2, '0')}/'
+                '${_selectedDate.month.toString().padLeft(2, '0')}/'
+                '${_selectedDate.year}',
+              ),
+              trailing: TextButton(
+                onPressed: _selectDate,
+                child: const Text('Change'),
               ),
             ),
-
-            const SizedBox(height: 20),
-
+            const SizedBox(height: 8),
             TextField(
               controller: _notesController,
               maxLines: 3,
               decoration: const InputDecoration(
                 labelText: 'Notes',
-                hintText: 'Optional notes',
                 border: OutlineInputBorder(),
               ),
             ),
-
-            const SizedBox(height: 28),
-
+            const SizedBox(height: 24),
             SizedBox(
               height: 52,
               child: FilledButton.icon(
                 onPressed: _saveTransaction,
-                icon: const Icon(Icons.check_rounded),
-                label: const Text('Save Transaction'),
+                icon: Icon(
+                  widget.isEditMode
+                      ? Icons.save_rounded
+                      : Icons.add_rounded,
+                ),
+                label: Text(
+                  widget.isEditMode
+                      ? 'Update Transaction'
+                      : 'Save Transaction',
+                ),
               ),
             ),
           ],
