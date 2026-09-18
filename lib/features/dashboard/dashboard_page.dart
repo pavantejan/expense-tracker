@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../transactions/add_transaction_page.dart';
+
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
 
@@ -136,7 +138,13 @@ class DashboardPage extends StatelessWidget {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {},
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const AddTransactionPage(),
+            ),
+          );
+        },
         icon: const Icon(Icons.add_rounded),
         label: const Text('Add Transaction'),
       ),
