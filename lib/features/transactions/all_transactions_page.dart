@@ -7,7 +7,12 @@ import '../../data/notifications/notification.dart';
 import 'add_transaction_page.dart';
 
 class AllTransactionsPage extends StatefulWidget {
-  const AllTransactionsPage({super.key});
+  const AllTransactionsPage({
+    super.key,
+    this.autoFocusSearch = false,
+  });
+
+  final bool autoFocusSearch;
 
   @override
   State<AllTransactionsPage> createState() => _AllTransactionsPageState();
@@ -15,12 +20,29 @@ class AllTransactionsPage extends StatefulWidget {
 
 class _AllTransactionsPageState extends State<AllTransactionsPage> {
   final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
 
   String _searchQuery = '';
 
   @override
+  void initState() {
+    super.initState();
+
+    if (widget.autoFocusSearch) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+
+        _searchFocusNode.requestFocus();
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -135,6 +157,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: TextField(
                 controller: _searchController,
+                focusNode: _searchFocusNode,
                 onChanged: (value) {
                   setState(() {
                     _searchQuery = value.trim();

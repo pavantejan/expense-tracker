@@ -52,7 +52,15 @@ class DashboardPage extends StatelessWidget {
             ),
             actions: [
               IconButton(
-                onPressed: () {},
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const AllTransactionsPage(
+                        autoFocusSearch: true,
+                      ),
+                    ),
+                  );
+                },
                 icon: const Icon(Icons.search_rounded),
                 tooltip: 'Search',
               ),
@@ -69,7 +77,9 @@ class DashboardPage extends StatelessWidget {
                         onPressed: () {
                           _showNotifications(context);
                         },
-                        icon: const Icon(Icons.notifications_none_rounded),
+                        icon: const Icon(
+                          Icons.notifications_none_rounded,
+                        ),
                         tooltip: 'Notifications',
                       ),
                       if (unreadCount > 0)
@@ -80,7 +90,8 @@ class DashboardPage extends StatelessWidget {
                             width: 9,
                             height: 9,
                             decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.error,
+                              color:
+                                  Theme.of(context).colorScheme.error,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -107,12 +118,12 @@ class DashboardPage extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
-
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
                       children: [
                         Text(
                           'Balance',
@@ -121,7 +132,8 @@ class DashboardPage extends StatelessWidget {
                         const SizedBox(height: 8),
                         Text(
                           _formatAmount(balance),
-                          style: theme.textTheme.headlineMedium?.copyWith(
+                          style:
+                              theme.textTheme.headlineMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -129,9 +141,7 @@ class DashboardPage extends StatelessWidget {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Row(
                   children: [
                     Expanded(
@@ -151,11 +161,10 @@ class DashboardPage extends StatelessWidget {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 28),
-
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment:
+                      MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
                       'Recent Transactions',
@@ -167,7 +176,8 @@ class DashboardPage extends StatelessWidget {
                       onPressed: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => const AllTransactionsPage(),
+                            builder: (_) =>
+                                const AllTransactionsPage(),
                           ),
                         );
                       },
@@ -175,9 +185,7 @@ class DashboardPage extends StatelessWidget {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 8),
-
                 if (displayedTransactions.isEmpty)
                   Card(
                     child: Padding(
@@ -195,7 +203,8 @@ class DashboardPage extends StatelessWidget {
                           const SizedBox(height: 12),
                           Text(
                             'No transactions yet',
-                            style: theme.textTheme.titleMedium?.copyWith(
+                            style:
+                                theme.textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -227,7 +236,8 @@ class DashboardPage extends StatelessWidget {
               ],
             ),
           ),
-          floatingActionButton: FloatingActionButton.extended(
+          floatingActionButton:
+              FloatingActionButton.extended(
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
@@ -312,13 +322,15 @@ class _NotificationPopup extends StatelessWidget {
                           children: [
                             Text(
                               'Notifications',
-                              style: theme.textTheme.titleLarge?.copyWith(
+                              style: theme.textTheme.titleLarge
+                                  ?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
                             const Spacer(),
                             if (notifications.any(
-                              (notification) => !notification.isRead,
+                              (notification) =>
+                                  !notification.isRead,
                             ))
                               TextButton(
                                 onPressed: () {
@@ -338,7 +350,8 @@ class _NotificationPopup extends StatelessWidget {
                             child: Column(
                               children: [
                                 Icon(
-                                  Icons.notifications_none_rounded,
+                                  Icons
+                                      .notifications_none_rounded,
                                   size: 48,
                                 ),
                                 SizedBox(height: 12),
@@ -353,7 +366,8 @@ class _NotificationPopup extends StatelessWidget {
                             child: ListView.separated(
                               shrinkWrap: true,
                               itemCount: notifications.length,
-                              separatorBuilder: (_, _) => const Divider(height: 1),
+                              separatorBuilder: (_, _) =>
+                                  const Divider(height: 1),
                               itemBuilder: (context, index) {
                                 final notification =
                                     notifications[index];
@@ -373,29 +387,35 @@ class _NotificationPopup extends StatelessWidget {
                                   title: Text(
                                     notification.title,
                                     style: TextStyle(
-                                      fontWeight: notification.isRead
-                                          ? FontWeight.normal
-                                          : FontWeight.bold,
+                                      fontWeight:
+                                          notification.isRead
+                                              ? FontWeight.normal
+                                              : FontWeight.bold,
                                     ),
                                   ),
                                   subtitle: Text(
                                     notification.message,
                                   ),
-                                  trailing: notification.isRead
-                                      ? null
-                                      : Container(
-                                          width: 8,
-                                          height: 8,
-                                          decoration: BoxDecoration(
-                                            color: theme
-                                                .colorScheme
-                                                .primary,
-                                            shape: BoxShape.circle,
-                                          ),
-                                        ),
+                                  trailing:
+                                      notification.isRead
+                                          ? null
+                                          : Container(
+                                              width: 8,
+                                              height: 8,
+                                              decoration:
+                                                  BoxDecoration(
+                                                color: theme
+                                                    .colorScheme
+                                                    .primary,
+                                                shape:
+                                                    BoxShape.circle,
+                                              ),
+                                            ),
                                   onTap: () {
                                     NotificationManager.instance
-                                        .markAsRead(notification.id);
+                                        .markAsRead(
+                                      notification.id,
+                                    );
                                   },
                                 );
                               },
@@ -448,20 +468,23 @@ class _SummaryCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
           children: [
             Icon(icon),
             const SizedBox(height: 12),
             Text(
               title,
-              style: Theme.of(context).textTheme.bodyMedium,
+              style:
+                  Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 4),
             Text(
               amount,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style:
+                  Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
             ),
           ],
         ),
@@ -488,7 +511,10 @@ class _TransactionCard extends StatelessWidget {
       child: ListTile(
         onTap: onTap,
         onLongPress: () {
-          _showDeleteConfirmation(context, transaction);
+          _showDeleteConfirmation(
+            context,
+            transaction,
+          );
         },
         leading: CircleAvatar(
           child: Icon(
@@ -503,10 +529,12 @@ class _TransactionCard extends StatelessWidget {
               : transaction.category,
         ),
         subtitle: Text(
-          '${transaction.category} • ${transaction.paymentMethod}',
+          '${transaction.category} • '
+          '${transaction.paymentMethod}',
         ),
         trailing: Text(
-          '${isIncome ? '+' : '-'}₹${transaction.amount.toStringAsFixed(2)}',
+          '${isIncome ? '+' : '-'}'
+          '₹${transaction.amount.toStringAsFixed(2)}',
           style: const TextStyle(
             fontWeight: FontWeight.bold,
           ),
@@ -563,7 +591,8 @@ Future<void> _showDeleteConfirmation(
   NotificationManager.instance.add(
     type: NotificationType.transactionDeleted,
     title: 'Transaction deleted',
-    message: '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
+    message:
+        '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
         '₹${transaction.amount.toStringAsFixed(2)}',
   );
 
@@ -573,7 +602,8 @@ Future<void> _showDeleteConfirmation(
       action: SnackBarAction(
         label: 'UNDO',
         onPressed: () async {
-          final restored = await transactionRepository.restoreTransaction(
+          final restored =
+              await transactionRepository.restoreTransaction(
             transaction.id,
           );
 
