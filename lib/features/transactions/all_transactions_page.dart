@@ -4,8 +4,23 @@ import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
 import 'add_transaction_page.dart';
 
-class AllTransactionsPage extends StatelessWidget {
+class AllTransactionsPage extends StatefulWidget {
   const AllTransactionsPage({super.key});
+
+  @override
+  State<AllTransactionsPage> createState() => _AllTransactionsPageState();
+}
+
+class _AllTransactionsPageState extends State<AllTransactionsPage> {
+  final _searchController = TextEditingController();
+
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -19,37 +34,86 @@ class AllTransactionsPage extends StatelessWidget {
         ),
       ),
       body: SafeArea(
-        child: StreamBuilder<List<Transaction>>(
-          stream: transactionRepository.watchAllTransactions(),
-          builder: (context, snapshot) {
-            final transactions = snapshot.data ?? [];
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value.trim();
+                  });
+                },
+                decoration: InputDecoration(
+                  hintText: 'Search transactions',
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  suffixIcon: _searchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          onPressed: () {
+                            _searchController.clear();
 
-            if (transactions.isEmpty) {
-              return const _EmptyTransactionsView();
-            }
-
-            return ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: transactions.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final transaction = transactions[index];
-
-                return _AllTransactionCard(
-                  transaction: transaction,
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => AddTransactionPage(
-                          transactionId: transaction.id,
+                            setState(() {
+                              _searchQuery = '';
+                            });
+                          },
+                          icon: const Icon(Icons.clear_rounded),
+                          tooltip: 'Clear search',
                         ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: StreamBuilder<List<Transaction>>(
+                stream: _searchQuery.isEmpty
+                    ? transactionRepository.watchAllTransactions()
+                    : transactionRepository.searchTransactions(
+                        _searchQuery,
                       ),
+                builder: (context, snapshot) {
+                  final transactions = snapshot.data ?? [];
+
+                  if (transactions.isEmpty) {
+                    return _EmptyTransactionsView(
+                      isSearching: _searchQuery.isNotEmpty,
                     );
-                  },
-                );
-              },
-            );
-          },
+                  }
+
+                  return ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(
+                      16,
+                      0,
+                      16,
+                      16,
+                    ),
+                    itemCount: transactions.length,
+                    separatorBuilder: (_, _) =>
+                        const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final transaction = transactions[index];
+
+                      return _AllTransactionCard(
+                        transaction: transaction,
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => AddTransactionPage(
+                                transactionId: transaction.id,
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -117,7 +181,11 @@ class _AllTransactionCard extends StatelessWidget {
 }
 
 class _EmptyTransactionsView extends StatelessWidget {
-  const _EmptyTransactionsView();
+  const _EmptyTransactionsView({
+    required this.isSearching,
+  });
+
+  final bool isSearching;
 
   @override
   Widget build(BuildContext context) {
@@ -130,20 +198,26 @@ class _EmptyTransactionsView extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.receipt_long_outlined,
+              isSearching
+                  ? Icons.search_off_rounded
+                  : Icons.receipt_long_outlined,
               size: 64,
               color: theme.colorScheme.primary,
             ),
             const SizedBox(height: 16),
             Text(
-              'No transactions yet',
+              isSearching
+                  ? 'No transactions found'
+                  : 'No transactions yet',
               style: theme.textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.bold,
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Your expenses and income will appear here.',
+              isSearching
+                  ? 'Try a different search term.'
+                  : 'Your expenses and income will appear here.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium,
             ),

@@ -18,6 +18,26 @@ class TransactionRepository {
           ]))
         .watch();
   }
+  Stream<List<Transaction>> searchTransactions(String query) {
+    final searchQuery = '%${query.trim()}%';
+
+    return (_database.select(_database.transactions)
+          ..where(
+            (t) =>
+                t.deleted.equals(false) &
+                (t.description.like(searchQuery) |
+                    t.category.like(searchQuery) |
+                    t.paymentMethod.like(searchQuery) |
+                    t.notes.like(searchQuery)),
+          )
+          ..orderBy([
+            (t) => OrderingTerm(
+                  expression: t.transactionDate,
+                  mode: OrderingMode.desc,
+                ),
+          ]))
+        .watch();
+  }
 
   Future<int> addTransaction(TransactionsCompanion transaction) {
     return _database.into(_database.transactions).insert(transaction);
