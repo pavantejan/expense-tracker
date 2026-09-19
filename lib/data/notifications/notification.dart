@@ -2,6 +2,7 @@ enum NotificationType {
   transactionAdded,
   transactionUpdated,
   transactionDeleted,
+  transactionRestored,
   syncCompleted,
   syncFailed,
 }

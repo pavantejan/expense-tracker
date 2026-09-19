@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../core/database/repository_provider.dart';
+import '../../core/notifications/notification_manager.dart';
 import '../../data/database/app_database.dart';
+import '../../data/notifications/notification.dart';
 import 'add_transaction_page.dart';
 
 class AllTransactionsPage extends StatefulWidget {
@@ -22,10 +24,103 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
     super.dispose();
   }
 
+  Future<bool> _confirmDelete(Transaction transaction) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) {
+            final title = transaction.description?.isNotEmpty == true
+                ? transaction.description!
+                : transaction.category;
+
+            return AlertDialog(
+              title: const Text('Delete transaction?'),
+              content: Text(
+                'Are you sure you want to delete '
+                '$title for ₹${transaction.amount.toStringAsFixed(2)}?',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop(false);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop(true);
+                  },
+                  child: const Text('Delete'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  Future<void> _deleteTransaction(Transaction transaction) async {
+    final deleted = await transactionRepository.deleteTransaction(
+      transaction.id,
+    );
+
+    if (!deleted || !mounted) {
+      return;
+    }
+
+    final title = transaction.description?.isNotEmpty == true
+        ? transaction.description!
+        : transaction.category;
+
+    NotificationManager.instance.add(
+      type: NotificationType.transactionDeleted,
+      title: 'Transaction deleted',
+      message: '$title • ₹${transaction.amount.toStringAsFixed(2)}',
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Transaction deleted'),
+        action: SnackBarAction(
+          label: 'UNDO',
+          onPressed: () async {
+            final restored =
+                await transactionRepository.restoreTransaction(
+              transaction.id,
+            );
+
+            if (!restored || !mounted) {
+              return;
+            }
+
+            NotificationManager.instance.add(
+              type: NotificationType.transactionRestored,
+              title: 'Transaction restored',
+              message: '$title • ₹${transaction.amount.toStringAsFixed(2)}',
+            );
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Transaction restored'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            ScaffoldMessenger.of(context).clearSnackBars();
+            Navigator.of(context).pop();
+          },
+        ),
         title: const Text(
           'All Transactions',
           style: TextStyle(
@@ -96,17 +191,41 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
                     itemBuilder: (context, index) {
                       final transaction = transactions[index];
 
-                      return _AllTransactionCard(
-                        transaction: transaction,
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => AddTransactionPage(
-                                transactionId: transaction.id,
-                              ),
-                            ),
-                          );
+                      return Dismissible(
+                        key: ValueKey(transaction.id),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: 24),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .errorContainer,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Icon(
+                            Icons.delete_rounded,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onErrorContainer,
+                          ),
+                        ),
+                        confirmDismiss: (_) => _confirmDelete(transaction),
+                        onDismissed: (_) {
+                          _deleteTransaction(transaction);
                         },
+                        child: _AllTransactionCard(
+                          transaction: transaction,
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => AddTransactionPage(
+                                  transactionId: transaction.id,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                       );
                     },
                   );

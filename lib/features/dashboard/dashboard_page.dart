@@ -421,6 +421,8 @@ class _NotificationPopup extends StatelessWidget {
         return Icons.edit_rounded;
       case NotificationType.transactionDeleted:
         return Icons.delete_outline_rounded;
+      case NotificationType.transactionRestored:
+        return Icons.restore_rounded;
       case NotificationType.syncCompleted:
         return Icons.cloud_done_outlined;
       case NotificationType.syncFailed:
@@ -563,5 +565,37 @@ Future<void> _showDeleteConfirmation(
     title: 'Transaction deleted',
     message: '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
         '₹${transaction.amount.toStringAsFixed(2)}',
+  );
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: const Text('Transaction deleted'),
+      action: SnackBarAction(
+        label: 'UNDO',
+        onPressed: () async {
+          final restored = await transactionRepository.restoreTransaction(
+            transaction.id,
+          );
+
+          if (!restored || !context.mounted) {
+            return;
+          }
+
+          NotificationManager.instance.add(
+            type: NotificationType.transactionRestored,
+            title: 'Transaction restored',
+            message:
+                '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
+                '₹${transaction.amount.toStringAsFixed(2)}',
+          );
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Transaction restored'),
+            ),
+          );
+        },
+      ),
+    ),
   );
 }
