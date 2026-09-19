@@ -18,6 +18,35 @@ class TransactionRepository {
           ]))
         .watch();
   }
+  Stream<List<Transaction>> watchTransactionsForMonth(
+    DateTime month,
+  ) {
+    final start = DateTime(
+      month.year,
+      month.month,
+    );
+
+    final end = DateTime(
+      month.year,
+      month.month + 1,
+    );
+
+    return (_database.select(_database.transactions)
+          ..where(
+            (t) =>
+                t.deleted.equals(false) &
+                t.transactionDate.isBiggerOrEqualValue(start) &
+                t.transactionDate.isSmallerThanValue(end),
+          )
+          ..orderBy([
+            (t) => OrderingTerm(
+                  expression: t.transactionDate,
+                  mode: OrderingMode.desc,
+                ),
+          ]))
+        .watch();
+  }
+
   Stream<List<Transaction>> searchTransactions(String query) {
     final searchQuery = '%${query.trim()}%';
 
@@ -64,6 +93,18 @@ class TransactionRepository {
         .write(
           const TransactionsCompanion(
             deleted: Value(true),
+            syncStatus: Value('pending'),
+          ),
+        )
+        .then((count) => count > 0);
+  }
+  
+  Future<bool> restoreTransaction(int id) {
+    return (_database.update(_database.transactions)
+          ..where((t) => t.id.equals(id)))
+        .write(
+          const TransactionsCompanion(
+            deleted: Value(false),
             syncStatus: Value('pending'),
           ),
         )
