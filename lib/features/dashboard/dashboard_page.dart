@@ -6,6 +6,8 @@ import '../transactions/add_transaction_page.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
 
+import '../transactions/all_transactions_page.dart';
+
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
 
@@ -162,7 +164,13 @@ class DashboardPage extends StatelessWidget {
                       ),
                     ),
                     TextButton(
-                      onPressed: () {},
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const AllTransactionsPage(),
+                          ),
+                        );
+                      },
                       child: const Text('View all'),
                     ),
                   ],
