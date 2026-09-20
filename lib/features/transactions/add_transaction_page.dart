@@ -80,7 +80,11 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       _type = transaction.type;
       _category = transaction.category;
       _paymentMethod = transaction.paymentMethod;
-      _selectedDate = transaction.transactionDate;
+      _selectedDate = DateTime(
+        transaction.transactionDate.year,
+        transaction.transactionDate.month,
+        transaction.transactionDate.day,
+      );
 
       _amountController.text = transaction.amount.toString();
       _descriptionController.text = transaction.description ?? '';
@@ -98,7 +102,11 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
 
     if (picked != null) {
       setState(() {
-        _selectedDate = picked;
+        _selectedDate = DateTime(
+          picked.year,
+          picked.month,
+          picked.day,
+        );
       });
     }
   }
