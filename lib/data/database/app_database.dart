@@ -3,6 +3,7 @@ import 'package:drift_flutter/drift_flutter.dart';
 
 import 'transactions.dart';
 import 'custom_categories.dart';
+import 'notifications.dart';
 
 part 'app_database.g.dart';
 
@@ -10,6 +11,7 @@ part 'app_database.g.dart';
   tables: [
     Transactions,
     CustomCategories,
+    Notifications,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -22,7 +24,7 @@ class AppDatabase extends _$AppDatabase {
   }
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -53,6 +55,10 @@ class AppDatabase extends _$AppDatabase {
             await m.database.customStatement(
               'DROP TABLE IF EXISTS app_settings',
             );
+          }
+
+          if (from < 6) {
+            await m.createTable(notifications);
           }
         },
       );
