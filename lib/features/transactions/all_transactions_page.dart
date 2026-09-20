@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/categories/category.dart';
 import '../../core/database/repository_provider.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/database/app_database.dart';
@@ -292,7 +293,7 @@ class _AllTransactionCard extends StatelessWidget {
           child: Icon(
             isIncome
                 ? Icons.arrow_downward_rounded
-                : Icons.arrow_upward_rounded,
+                : _categoryIcon(transaction.category),
           ),
         ),
         title: Text(
@@ -319,6 +320,16 @@ class _AllTransactionCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  IconData _categoryIcon(String categoryName) {
+    for (final category in expenseCategories) {
+      if (category.name == categoryName) {
+        return category.icon;
+      }
+    }
+
+    return Icons.more_horiz_rounded;
   }
 }
 
