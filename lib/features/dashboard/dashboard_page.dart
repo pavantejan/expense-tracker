@@ -2,21 +2,79 @@ import 'package:flutter/material.dart';
 
 import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
-import '../transactions/add_transaction_page.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
-
+import '../transactions/add_transaction_page.dart';
 import '../transactions/all_transactions_page.dart';
+import '../settings/settings_page.dart';
 
-class DashboardPage extends StatelessWidget {
+class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  DateTime _selectedMonth = DateTime(
+    DateTime.now().year,
+    DateTime.now().month,
+  );
+
+  double _openingBalance = 0;
+  double _previousBalance = 0;
+  DateTime? _openingBalanceDate;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _loadOpeningBalance();
+  }
+
+  Future<void> _loadOpeningBalance() async {
+    final openingBalance =
+        await appSettingsRepository.getOpeningBalance();
+
+    final openingBalanceDate =
+        await appSettingsRepository.getOpeningBalanceDate();
+
+    final previousBalance =
+        await transactionRepository.getBalanceBeforeMonth(
+      _selectedMonth,
+      openingBalanceDate,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _openingBalance = openingBalance;
+      _openingBalanceDate = openingBalanceDate;
+      _previousBalance = previousBalance;
+    });
+  }
+
+  Future<void> _changeMonth(int monthOffset) async {
+    setState(() {
+      _selectedMonth = DateTime(
+        _selectedMonth.year,
+        _selectedMonth.month + monthOffset,
+      );
+    });
+
+    await _loadOpeningBalance();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return StreamBuilder<List<Transaction>>(
-      stream: transactionRepository.watchAllTransactions(),
+      stream: transactionRepository.watchTransactionsForMonth(
+        _selectedMonth,
+      ),
       builder: (context, snapshot) {
         final transactions = snapshot.data ?? [];
 
@@ -34,11 +92,28 @@ class DashboardPage extends StatelessWidget {
               (total, transaction) => total + transaction.amount,
             );
 
-        final balance = income - expenses;
+        final openingBalanceForMonth =
+            _openingBalanceDate == null ||
+                    _selectedMonth.isBefore(
+                      DateTime(
+                        _openingBalanceDate!.year,
+                        _openingBalanceDate!.month,
+                      ),
+                    )
+                ? 0
+                : _openingBalance;
+
+        final balance =
+            openingBalanceForMonth +
+            _previousBalance +
+            income -
+            expenses;
 
         final recentTransactions = [...transactions]
           ..sort(
-            (a, b) => b.transactionDate.compareTo(a.transactionDate),
+            (a, b) => b.transactionDate.compareTo(
+              a.transactionDate,
+            ),
           );
 
         final displayedTransactions =
@@ -48,7 +123,9 @@ class DashboardPage extends StatelessWidget {
           appBar: AppBar(
             title: const Text(
               'Expense Tracker',
-              style: TextStyle(fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+              ),
             ),
             actions: [
               IconButton(
@@ -61,7 +138,9 @@ class DashboardPage extends StatelessWidget {
                     ),
                   );
                 },
-                icon: const Icon(Icons.search_rounded),
+                icon: const Icon(
+                  Icons.search_rounded,
+                ),
                 tooltip: 'Search',
               ),
               AnimatedBuilder(
@@ -91,7 +170,9 @@ class DashboardPage extends StatelessWidget {
                             height: 9,
                             decoration: BoxDecoration(
                               color:
-                                  Theme.of(context).colorScheme.error,
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .error,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -101,8 +182,18 @@ class DashboardPage extends StatelessWidget {
                 },
               ),
               IconButton(
-                onPressed: () {},
-                icon: const Icon(Icons.settings_outlined),
+                onPressed: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const SettingsPage(),
+                    ),
+                  );
+
+                  await _loadOpeningBalance();
+                },
+                icon: const Icon(
+                  Icons.settings_rounded,
+                ),
                 tooltip: 'Settings',
               ),
             ],
@@ -111,11 +202,35 @@ class DashboardPage extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Text(
-                  'September 2026',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  mainAxisAlignment:
+                      MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      onPressed: () {
+                        _changeMonth(-1);
+                      },
+                      icon: const Icon(
+                        Icons.chevron_left_rounded,
+                      ),
+                      tooltip: 'Previous month',
+                    ),
+                    Text(
+                      _formatMonth(_selectedMonth),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () {
+                        _changeMonth(1);
+                      },
+                      icon: const Icon(
+                        Icons.chevron_right_rounded,
+                      ),
+                      tooltip: 'Next month',
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 Card(
@@ -168,7 +283,8 @@ class DashboardPage extends StatelessWidget {
                   children: [
                     Text(
                       'Recent Transactions',
-                      style: theme.textTheme.titleLarge?.copyWith(
+                      style:
+                          theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -198,7 +314,8 @@ class DashboardPage extends StatelessWidget {
                           Icon(
                             Icons.receipt_long_outlined,
                             size: 48,
-                            color: theme.colorScheme.primary,
+                            color:
+                                theme.colorScheme.primary,
                           ),
                           const SizedBox(height: 12),
                           Text(
@@ -210,9 +327,11 @@ class DashboardPage extends StatelessWidget {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Add your first expense or income.',
+                            'No transactions found for '
+                            '${_formatMonth(_selectedMonth)}.',
                             textAlign: TextAlign.center,
-                            style: theme.textTheme.bodyMedium,
+                            style:
+                                theme.textTheme.bodyMedium,
                           ),
                         ],
                       ),
@@ -225,8 +344,10 @@ class DashboardPage extends StatelessWidget {
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => AddTransactionPage(
-                              transactionId: transaction.id,
+                            builder: (_) =>
+                                AddTransactionPage(
+                              transactionId:
+                                  transaction.id,
                             ),
                           ),
                         );
@@ -241,16 +362,40 @@ class DashboardPage extends StatelessWidget {
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => const AddTransactionPage(),
+                  builder: (_) =>
+                      const AddTransactionPage(),
                 ),
               );
             },
-            icon: const Icon(Icons.add_rounded),
-            label: const Text('Add Transaction'),
+            icon: const Icon(
+              Icons.add_rounded,
+            ),
+            label: const Text(
+              'Add Transaction',
+            ),
           ),
         );
       },
     );
+  }
+
+  String _formatMonth(DateTime date) {
+    const monthNames = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+
+    return '${monthNames[date.month - 1]} ${date.year}';
   }
 
   String _formatAmount(double amount) {
@@ -264,16 +409,19 @@ void _showNotifications(BuildContext context) {
     barrierDismissible: true,
     barrierLabel: 'Notifications',
     barrierColor: Colors.transparent,
-    transitionDuration: const Duration(milliseconds: 200),
-    pageBuilder: (context, animation, secondaryAnimation) {
+    transitionDuration:
+        const Duration(milliseconds: 200),
+    pageBuilder:
+        (context, animation, secondaryAnimation) {
       return const _NotificationPopup();
     },
-    transitionBuilder: (
-      context,
-      animation,
-      secondaryAnimation,
-      child,
-    ) {
+    transitionBuilder:
+        (
+          context,
+          animation,
+          secondaryAnimation,
+          child,
+        ) {
       return FadeTransition(
         opacity: animation,
         child: child,
@@ -300,31 +448,41 @@ class _NotificationPopup extends StatelessWidget {
           ),
           child: Material(
             elevation: 8,
-            borderRadius: BorderRadius.circular(24),
+            borderRadius:
+                BorderRadius.circular(24),
             color: theme.colorScheme.surface,
             child: ConstrainedBox(
-              constraints: const BoxConstraints(
+              constraints:
+                  const BoxConstraints(
                 maxWidth: 360,
                 maxHeight: 520,
               ),
               child: AnimatedBuilder(
-                animation: NotificationManager.instance,
+                animation:
+                    NotificationManager.instance,
                 builder: (context, child) {
                   final notifications =
-                      NotificationManager.instance.notifications;
+                      NotificationManager
+                          .instance
+                          .notifications;
 
                   return Padding(
-                    padding: const EdgeInsets.all(20),
+                    padding:
+                        const EdgeInsets.all(20),
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
+                      mainAxisSize:
+                          MainAxisSize.min,
                       children: [
                         Row(
                           children: [
                             Text(
                               'Notifications',
-                              style: theme.textTheme.titleLarge
+                              style: theme
+                                  .textTheme
+                                  .titleLarge
                                   ?.copyWith(
-                                fontWeight: FontWeight.bold,
+                                fontWeight:
+                                    FontWeight.bold,
                               ),
                             ),
                             const Spacer(),
@@ -334,17 +492,21 @@ class _NotificationPopup extends StatelessWidget {
                             ))
                               TextButton(
                                 onPressed: () {
-                                  NotificationManager.instance
+                                  NotificationManager
+                                      .instance
                                       .markAllAsRead();
                                 },
-                                child: const Text('Mark all read'),
+                                child: const Text(
+                                  'Mark all read',
+                                ),
                               ),
                           ],
                         ),
                         const SizedBox(height: 8),
                         if (notifications.isEmpty)
                           const Padding(
-                            padding: EdgeInsets.symmetric(
+                            padding:
+                                EdgeInsets.symmetric(
                               vertical: 40,
                             ),
                             child: Column(
@@ -363,24 +525,34 @@ class _NotificationPopup extends StatelessWidget {
                           )
                         else
                           Flexible(
-                            child: ListView.separated(
+                            child:
+                                ListView.separated(
                               shrinkWrap: true,
-                              itemCount: notifications.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(height: 1),
-                              itemBuilder: (context, index) {
+                              itemCount:
+                                  notifications.length,
+                              separatorBuilder:
+                                  (_, _) =>
+                                      const Divider(
+                                height: 1,
+                              ),
+                              itemBuilder:
+                                  (context, index) {
                                 final notification =
-                                    notifications[index];
+                                    notifications[
+                                        index];
 
                                 return ListTile(
                                   contentPadding:
-                                      const EdgeInsets.symmetric(
+                                      const EdgeInsets
+                                          .symmetric(
                                     vertical: 4,
                                   ),
-                                  leading: CircleAvatar(
+                                  leading:
+                                      CircleAvatar(
                                     child: Icon(
                                       _notificationIcon(
-                                        notification.type,
+                                        notification
+                                            .type,
                                       ),
                                     ),
                                   ),
@@ -388,16 +560,20 @@ class _NotificationPopup extends StatelessWidget {
                                     notification.title,
                                     style: TextStyle(
                                       fontWeight:
-                                          notification.isRead
-                                              ? FontWeight.normal
-                                              : FontWeight.bold,
+                                          notification
+                                                  .isRead
+                                              ? FontWeight
+                                                  .normal
+                                              : FontWeight
+                                                  .bold,
                                     ),
                                   ),
                                   subtitle: Text(
                                     notification.message,
                                   ),
                                   trailing:
-                                      notification.isRead
+                                      notification
+                                              .isRead
                                           ? null
                                           : Container(
                                               width: 8,
@@ -408,11 +584,13 @@ class _NotificationPopup extends StatelessWidget {
                                                     .colorScheme
                                                     .primary,
                                                 shape:
-                                                    BoxShape.circle,
+                                                    BoxShape
+                                                        .circle,
                                               ),
                                             ),
                                   onTap: () {
-                                    NotificationManager.instance
+                                    NotificationManager
+                                        .instance
                                         .markAsRead(
                                       notification.id,
                                     );
@@ -433,7 +611,9 @@ class _NotificationPopup extends StatelessWidget {
     );
   }
 
-  IconData _notificationIcon(NotificationType type) {
+  IconData _notificationIcon(
+    NotificationType type,
+  ) {
     switch (type) {
       case NotificationType.transactionAdded:
         return Icons.add_rounded;
@@ -476,14 +656,20 @@ class _SummaryCard extends StatelessWidget {
             Text(
               title,
               style:
-                  Theme.of(context).textTheme.bodyMedium,
+                  Theme.of(context)
+                      .textTheme
+                      .bodyMedium,
             ),
             const SizedBox(height: 4),
             Text(
               amount,
               style:
-                  Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
+                  Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(
+                        fontWeight:
+                            FontWeight.bold,
                       ),
             ),
           ],
@@ -504,10 +690,12 @@ class _TransactionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isIncome = transaction.type == 'Income';
+    final isIncome =
+        transaction.type == 'Income';
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin:
+          const EdgeInsets.only(bottom: 8),
       child: ListTile(
         onTap: onTap,
         onLongPress: () {
@@ -524,7 +712,9 @@ class _TransactionCard extends StatelessWidget {
           ),
         ),
         title: Text(
-          transaction.description?.isNotEmpty == true
+          transaction.description
+                      ?.isNotEmpty ==
+                  true
               ? transaction.description!
               : transaction.category,
         ),
@@ -548,11 +738,14 @@ Future<void> _showDeleteConfirmation(
   BuildContext context,
   Transaction transaction,
 ) async {
-  final confirmed = await showDialog<bool>(
+  final confirmed =
+      await showDialog<bool>(
     context: context,
     builder: (dialogContext) {
       return AlertDialog(
-        title: const Text('Delete transaction?'),
+        title: const Text(
+          'Delete transaction?',
+        ),
         content: Text(
           'Are you sure you want to delete '
           '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} '
@@ -561,67 +754,89 @@ Future<void> _showDeleteConfirmation(
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.of(dialogContext).pop(false);
+              Navigator.of(dialogContext)
+                  .pop(false);
             },
-            child: const Text('Cancel'),
+            child: const Text(
+              'Cancel',
+            ),
           ),
           FilledButton(
             onPressed: () {
-              Navigator.of(dialogContext).pop(true);
+              Navigator.of(dialogContext)
+                  .pop(true);
             },
-            child: const Text('Delete'),
+            child: const Text(
+              'Delete',
+            ),
           ),
         ],
       );
     },
   );
 
-  if (confirmed != true || !context.mounted) {
+  if (confirmed != true ||
+      !context.mounted) {
     return;
   }
 
-  final deleted = await transactionRepository.deleteTransaction(
+  final deleted =
+      await transactionRepository
+          .deleteTransaction(
     transaction.id,
   );
 
-  if (!deleted || !context.mounted) {
+  if (!deleted ||
+      !context.mounted) {
     return;
   }
 
   NotificationManager.instance.add(
-    type: NotificationType.transactionDeleted,
-    title: 'Transaction deleted',
+    type:
+        NotificationType.transactionDeleted,
+    title:
+        'Transaction deleted',
     message:
         '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
         '₹${transaction.amount.toStringAsFixed(2)}',
   );
 
-  ScaffoldMessenger.of(context).showSnackBar(
+  ScaffoldMessenger.of(context)
+      .showSnackBar(
     SnackBar(
-      content: const Text('Transaction deleted'),
+      content: const Text(
+        'Transaction deleted',
+      ),
       action: SnackBarAction(
         label: 'UNDO',
         onPressed: () async {
           final restored =
-              await transactionRepository.restoreTransaction(
+              await transactionRepository
+                  .restoreTransaction(
             transaction.id,
           );
 
-          if (!restored || !context.mounted) {
+          if (!restored ||
+              !context.mounted) {
             return;
           }
 
           NotificationManager.instance.add(
-            type: NotificationType.transactionRestored,
-            title: 'Transaction restored',
+            type: NotificationType
+                .transactionRestored,
+            title:
+                'Transaction restored',
             message:
                 '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
                 '₹${transaction.amount.toStringAsFixed(2)}',
           );
 
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context)
+              .showSnackBar(
             const SnackBar(
-              content: Text('Transaction restored'),
+              content: Text(
+                'Transaction restored',
+              ),
             ),
           );
         },

@@ -47,6 +47,51 @@ class TransactionRepository {
         .watch();
   }
 
+  Future<double> getBalanceBeforeMonth(
+    DateTime month,
+    DateTime? openingBalanceDate,
+  ) async {
+    if (openingBalanceDate == null) {
+      return 0;
+    }
+
+    final startOfMonth = DateTime(
+      month.year,
+      month.month,
+    );
+
+    final startOfOpeningMonth = DateTime(
+      openingBalanceDate.year,
+      openingBalanceDate.month,
+    );
+
+    if (startOfMonth.isBefore(startOfOpeningMonth)) {
+      return 0;
+    }
+
+    final transactions = await (_database.select(_database.transactions)
+          ..where(
+            (t) =>
+                t.deleted.equals(false) &
+                t.transactionDate.isBiggerOrEqualValue(
+                  startOfOpeningMonth,
+                ) &
+                t.transactionDate.isSmallerThanValue(startOfMonth),
+          ))
+        .get();
+
+    return transactions.fold<double>(
+      0,
+      (balance, transaction) {
+        if (transaction.type == 'Income') {
+          return balance + transaction.amount;
+        }
+
+        return balance - transaction.amount;
+      },
+    );
+  }
+
   Stream<List<Transaction>> searchTransactions(String query) {
     final searchQuery = '%${query.trim()}%';
 
