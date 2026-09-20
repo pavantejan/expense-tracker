@@ -3,6 +3,7 @@ import 'package:drift_flutter/drift_flutter.dart';
 
 import 'transactions.dart';
 import 'app_settings.dart';
+import 'custom_categories.dart';
 
 part 'app_database.g.dart';
 
@@ -12,6 +13,7 @@ part 'app_database.g.dart';
   tables: [
     Transactions,
     AppSettings,
+    CustomCategories,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -24,7 +26,7 @@ class AppDatabase extends _$AppDatabase {
   }
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -41,6 +43,10 @@ class AppDatabase extends _$AppDatabase {
               appSettings,
               appSettings.openingBalanceDate,
             );
+          }
+
+          if (from < 4) {
+            await m.createTable(customCategories);
           }
         },
       );
