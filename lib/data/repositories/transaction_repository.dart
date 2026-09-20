@@ -47,6 +47,28 @@ class TransactionRepository {
         .watch();
   }
 
+  Stream<List<Transaction>> watchTransactionsForYear(
+    int year,
+  ) {
+    final start = DateTime(year);
+    final end = DateTime(year + 1);
+
+    return (_database.select(_database.transactions)
+          ..where(
+            (t) =>
+                t.deleted.equals(false) &
+                t.transactionDate.isBiggerOrEqualValue(start) &
+                t.transactionDate.isSmallerThanValue(end),
+          )
+          ..orderBy([
+            (t) => OrderingTerm(
+                  expression: t.transactionDate,
+                  mode: OrderingMode.desc,
+                ),
+          ]))
+        .watch();
+  }
+  
   Future<double> getBalanceBeforeMonth(
     DateTime month,
     DateTime? openingBalanceDate,

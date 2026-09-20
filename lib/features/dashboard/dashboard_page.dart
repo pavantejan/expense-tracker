@@ -23,50 +23,13 @@ class _DashboardPageState extends State<DashboardPage> {
     DateTime.now().month,
   );
 
-  double _openingBalance = 0;
-  double _previousBalance = 0;
-  DateTime? _openingBalanceDate;
-
-  @override
-  void initState() {
-    super.initState();
-
-    _loadOpeningBalance();
-  }
-
-  Future<void> _loadOpeningBalance() async {
-    final openingBalance =
-        await appSettingsRepository.getOpeningBalance();
-
-    final openingBalanceDate =
-        await appSettingsRepository.getOpeningBalanceDate();
-
-    final previousBalance =
-        await transactionRepository.getBalanceBeforeMonth(
-      _selectedMonth,
-      openingBalanceDate,
-    );
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _openingBalance = openingBalance;
-      _openingBalanceDate = openingBalanceDate;
-      _previousBalance = previousBalance;
-    });
-  }
-
-  Future<void> _changeMonth(int monthOffset) async {
+  void _changeMonth(int monthOffset) {
     setState(() {
       _selectedMonth = DateTime(
         _selectedMonth.year,
         _selectedMonth.month + monthOffset,
       );
     });
-
-    await _loadOpeningBalance();
   }
 
   @override
@@ -74,11 +37,27 @@ class _DashboardPageState extends State<DashboardPage> {
     final theme = Theme.of(context);
 
     return StreamBuilder<List<Transaction>>(
-      stream: transactionRepository.watchTransactionsForMonth(
-        _selectedMonth,
-      ),
+      stream: transactionRepository.watchAllTransactions(),
       builder: (context, snapshot) {
-        final transactions = snapshot.data ?? [];
+        final allTransactions = snapshot.data ?? [];
+
+        final monthStart = DateTime(
+          _selectedMonth.year,
+          _selectedMonth.month,
+        );
+
+        final nextMonthStart = DateTime(
+          _selectedMonth.year,
+          _selectedMonth.month + 1,
+        );
+
+        final transactions = allTransactions
+            .where(
+              (transaction) =>
+                  !transaction.transactionDate.isBefore(monthStart) &&
+                  transaction.transactionDate.isBefore(nextMonthStart),
+            )
+            .toList();
 
         final income = transactions
             .where((transaction) => transaction.type == 'Income')
@@ -94,22 +73,21 @@ class _DashboardPageState extends State<DashboardPage> {
               (total, transaction) => total + transaction.amount,
             );
 
-        final openingBalanceForMonth =
-            _openingBalanceDate == null ||
-                    _selectedMonth.isBefore(
-                      DateTime(
-                        _openingBalanceDate!.year,
-                        _openingBalanceDate!.month,
-                      ),
-                    )
-                ? 0
-                : _openingBalance;
+        final closingBalance = allTransactions
+            .where(
+              (transaction) =>
+                  transaction.transactionDate.isBefore(nextMonthStart),
+            )
+            .fold<double>(
+          0,
+          (balance, transaction) {
+            if (transaction.type == 'Income') {
+              return balance + transaction.amount;
+            }
 
-        final balance =
-            openingBalanceForMonth +
-            _previousBalance +
-            income -
-            expenses;
+            return balance - transaction.amount;
+          },
+        );
 
         final recentTransactions = [...transactions]
           ..sort(
@@ -171,9 +149,8 @@ class _DashboardPageState extends State<DashboardPage> {
                             width: 9,
                             height: 9,
                             decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .error,
+                              color:
+                                  Theme.of(context).colorScheme.error,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -189,8 +166,6 @@ class _DashboardPageState extends State<DashboardPage> {
                       builder: (_) => const SettingsPage(),
                     ),
                   );
-
-                  await _loadOpeningBalance();
                 },
                 icon: const Icon(
                   Icons.settings_rounded,
@@ -204,7 +179,8 @@ class _DashboardPageState extends State<DashboardPage> {
               padding: const EdgeInsets.all(16),
               children: [
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment:
+                      MainAxisAlignment.spaceBetween,
                   children: [
                     IconButton(
                       onPressed: () {
@@ -246,11 +222,17 @@ class _DashboardPageState extends State<DashboardPage> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          _formatAmount(balance),
+                          _formatAmount(closingBalance),
                           style:
                               theme.textTheme.headlineMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Closing balance for '
+                          '${_formatMonth(_selectedMonth)}',
+                          style: theme.textTheme.bodySmall,
                         ),
                       ],
                     ),
@@ -346,7 +328,8 @@ class _DashboardPageState extends State<DashboardPage> {
                           Icon(
                             Icons.receipt_long_outlined,
                             size: 48,
-                            color: theme.colorScheme.primary,
+                            color:
+                                theme.colorScheme.primary,
                           ),
                           const SizedBox(height: 12),
                           Text(
@@ -361,7 +344,8 @@ class _DashboardPageState extends State<DashboardPage> {
                             'No transactions found for '
                             '${_formatMonth(_selectedMonth)}.',
                             textAlign: TextAlign.center,
-                            style: theme.textTheme.bodyMedium,
+                            style:
+                                theme.textTheme.bodyMedium,
                           ),
                         ],
                       ),
@@ -374,8 +358,10 @@ class _DashboardPageState extends State<DashboardPage> {
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) => AddTransactionPage(
-                              transactionId: transaction.id,
+                            builder: (_) =>
+                                AddTransactionPage(
+                              transactionId:
+                                  transaction.id,
                             ),
                           ),
                         );
@@ -385,11 +371,13 @@ class _DashboardPageState extends State<DashboardPage> {
               ],
             ),
           ),
-          floatingActionButton: FloatingActionButton.extended(
+          floatingActionButton:
+              FloatingActionButton.extended(
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => const AddTransactionPage(),
+                  builder: (_) =>
+                      const AddTransactionPage(),
                 ),
               );
             },
@@ -435,16 +423,19 @@ void _showNotifications(BuildContext context) {
     barrierDismissible: true,
     barrierLabel: 'Notifications',
     barrierColor: Colors.transparent,
-    transitionDuration: const Duration(milliseconds: 200),
-    pageBuilder: (context, animation, secondaryAnimation) {
+    transitionDuration:
+        const Duration(milliseconds: 200),
+    pageBuilder:
+        (context, animation, secondaryAnimation) {
       return const _NotificationPopup();
     },
-    transitionBuilder: (
-      context,
-      animation,
-      secondaryAnimation,
-      child,
-    ) {
+    transitionBuilder:
+        (
+          context,
+          animation,
+          secondaryAnimation,
+          child,
+        ) {
       return FadeTransition(
         opacity: animation,
         child: child,
@@ -471,39 +462,52 @@ class _NotificationPopup extends StatelessWidget {
           ),
           child: Material(
             elevation: 8,
-            borderRadius: BorderRadius.circular(24),
+            borderRadius:
+                BorderRadius.circular(24),
             color: theme.colorScheme.surface,
             child: ConstrainedBox(
-              constraints: const BoxConstraints(
+              constraints:
+                  const BoxConstraints(
                 maxWidth: 360,
                 maxHeight: 520,
               ),
               child: AnimatedBuilder(
-                animation: NotificationManager.instance,
+                animation:
+                    NotificationManager.instance,
                 builder: (context, child) {
                   final notifications =
-                      NotificationManager.instance.notifications;
+                      NotificationManager
+                          .instance
+                          .notifications;
 
                   return Padding(
-                    padding: const EdgeInsets.all(20),
+                    padding:
+                        const EdgeInsets.all(20),
                     child: Column(
-                      mainAxisSize: MainAxisSize.min,
+                      mainAxisSize:
+                          MainAxisSize.min,
                       children: [
                         Row(
                           children: [
                             Text(
                               'Notifications',
-                              style: theme.textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
+                              style: theme
+                                  .textTheme
+                                  .titleLarge
+                                  ?.copyWith(
+                                fontWeight:
+                                    FontWeight.bold,
                               ),
                             ),
                             const Spacer(),
                             if (notifications.any(
-                              (notification) => !notification.isRead,
+                              (notification) =>
+                                  !notification.isRead,
                             ))
                               TextButton(
                                 onPressed: () {
-                                  NotificationManager.instance
+                                  NotificationManager
+                                      .instance
                                       .markAllAsRead();
                                 },
                                 child: const Text(
@@ -515,13 +519,15 @@ class _NotificationPopup extends StatelessWidget {
                         const SizedBox(height: 8),
                         if (notifications.isEmpty)
                           const Padding(
-                            padding: EdgeInsets.symmetric(
+                            padding:
+                                EdgeInsets.symmetric(
                               vertical: 40,
                             ),
                             child: Column(
                               children: [
                                 Icon(
-                                  Icons.notifications_none_rounded,
+                                  Icons
+                                      .notifications_none_rounded,
                                   size: 48,
                                 ),
                                 SizedBox(height: 12),
@@ -533,53 +539,72 @@ class _NotificationPopup extends StatelessWidget {
                           )
                         else
                           Flexible(
-                            child: ListView.separated(
+                            child:
+                                ListView.separated(
                               shrinkWrap: true,
-                              itemCount: notifications.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(
+                              itemCount:
+                                  notifications.length,
+                              separatorBuilder:
+                                  (_, _) =>
+                                      const Divider(
                                 height: 1,
                               ),
-                              itemBuilder: (context, index) {
+                              itemBuilder:
+                                  (context, index) {
                                 final notification =
-                                    notifications[index];
+                                    notifications[
+                                        index];
 
                                 return ListTile(
                                   contentPadding:
-                                      const EdgeInsets.symmetric(
+                                      const EdgeInsets
+                                          .symmetric(
                                     vertical: 4,
                                   ),
-                                  leading: CircleAvatar(
+                                  leading:
+                                      CircleAvatar(
                                     child: Icon(
                                       _notificationIcon(
-                                        notification.type,
+                                        notification
+                                            .type,
                                       ),
                                     ),
                                   ),
                                   title: Text(
                                     notification.title,
                                     style: TextStyle(
-                                      fontWeight: notification.isRead
-                                          ? FontWeight.normal
-                                          : FontWeight.bold,
+                                      fontWeight:
+                                          notification
+                                                  .isRead
+                                              ? FontWeight
+                                                  .normal
+                                              : FontWeight
+                                                  .bold,
                                     ),
                                   ),
                                   subtitle: Text(
                                     notification.message,
                                   ),
-                                  trailing: notification.isRead
-                                      ? null
-                                      : Container(
-                                          width: 8,
-                                          height: 8,
-                                          decoration: BoxDecoration(
-                                            color: theme
-                                                .colorScheme.primary,
-                                            shape: BoxShape.circle,
-                                          ),
-                                        ),
+                                  trailing:
+                                      notification
+                                              .isRead
+                                          ? null
+                                          : Container(
+                                              width: 8,
+                                              height: 8,
+                                              decoration:
+                                                  BoxDecoration(
+                                                color: theme
+                                                    .colorScheme
+                                                    .primary,
+                                                shape:
+                                                    BoxShape
+                                                        .circle,
+                                              ),
+                                            ),
                                   onTap: () {
-                                    NotificationManager.instance
+                                    NotificationManager
+                                        .instance
                                         .markAsRead(
                                       notification.id,
                                     );
@@ -644,14 +669,22 @@ class _SummaryCard extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               title,
-              style: Theme.of(context).textTheme.bodyMedium,
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodyMedium,
             ),
             const SizedBox(height: 4),
             Text(
               amount,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
             ),
           ],
         ),
@@ -671,10 +704,12 @@ class _TransactionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isIncome = transaction.type == 'Income';
+    final isIncome =
+        transaction.type == 'Income';
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin:
+          const EdgeInsets.only(bottom: 8),
       child: ListTile(
         onTap: onTap,
         onLongPress: () {
@@ -691,7 +726,9 @@ class _TransactionCard extends StatelessWidget {
           ),
         ),
         title: Text(
-          transaction.description?.isNotEmpty == true
+          transaction.description
+                      ?.isNotEmpty ==
+                  true
               ? transaction.description!
               : transaction.category,
         ),
@@ -725,7 +762,8 @@ Future<void> _showDeleteConfirmation(
   BuildContext context,
   Transaction transaction,
 ) async {
-  final confirmed = await showDialog<bool>(
+  final confirmed =
+      await showDialog<bool>(
     context: context,
     builder: (dialogContext) {
       return AlertDialog(
@@ -740,7 +778,8 @@ Future<void> _showDeleteConfirmation(
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.of(dialogContext).pop(false);
+              Navigator.of(dialogContext)
+                  .pop(false);
             },
             child: const Text(
               'Cancel',
@@ -748,7 +787,8 @@ Future<void> _showDeleteConfirmation(
           ),
           FilledButton(
             onPressed: () {
-              Navigator.of(dialogContext).pop(true);
+              Navigator.of(dialogContext)
+                  .pop(true);
             },
             child: const Text(
               'Delete',
@@ -759,27 +799,34 @@ Future<void> _showDeleteConfirmation(
     },
   );
 
-  if (confirmed != true || !context.mounted) {
+  if (confirmed != true ||
+      !context.mounted) {
     return;
   }
 
-  final deleted = await transactionRepository.deleteTransaction(
+  final deleted =
+      await transactionRepository
+          .deleteTransaction(
     transaction.id,
   );
 
-  if (!deleted || !context.mounted) {
+  if (!deleted ||
+      !context.mounted) {
     return;
   }
 
   NotificationManager.instance.add(
-    type: NotificationType.transactionDeleted,
-    title: 'Transaction deleted',
+    type:
+        NotificationType.transactionDeleted,
+    title:
+        'Transaction deleted',
     message:
         '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
         '₹${transaction.amount.toStringAsFixed(2)}',
   );
 
-  ScaffoldMessenger.of(context).showSnackBar(
+  ScaffoldMessenger.of(context)
+      .showSnackBar(
     SnackBar(
       content: const Text(
         'Transaction deleted',
@@ -788,23 +835,28 @@ Future<void> _showDeleteConfirmation(
         label: 'UNDO',
         onPressed: () async {
           final restored =
-              await transactionRepository.restoreTransaction(
+              await transactionRepository
+                  .restoreTransaction(
             transaction.id,
           );
 
-          if (!restored || !context.mounted) {
+          if (!restored ||
+              !context.mounted) {
             return;
           }
 
           NotificationManager.instance.add(
-            type: NotificationType.transactionRestored,
-            title: 'Transaction restored',
+            type: NotificationType
+                .transactionRestored,
+            title:
+                'Transaction restored',
             message:
                 '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
                 '₹${transaction.amount.toStringAsFixed(2)}',
           );
 
-          ScaffoldMessenger.of(context).showSnackBar(
+          ScaffoldMessenger.of(context)
+              .showSnackBar(
             const SnackBar(
               content: Text(
                 'Transaction restored',

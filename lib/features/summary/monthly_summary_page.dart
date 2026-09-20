@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
+import 'yearly_summary_page.dart';
 
 class MonthlySummaryPage extends StatefulWidget {
   const MonthlySummaryPage({
@@ -48,11 +49,27 @@ class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
         title: const Text('Monthly Summary'),
       ),
       body: StreamBuilder<List<Transaction>>(
-        stream: transactionRepository.watchTransactionsForMonth(
-          _selectedMonth,
-        ),
+        stream: transactionRepository.watchAllTransactions(),
         builder: (context, snapshot) {
-          final transactions = snapshot.data ?? [];
+          final allTransactions = snapshot.data ?? [];
+
+          final monthStart = DateTime(
+            _selectedMonth.year,
+            _selectedMonth.month,
+          );
+
+          final nextMonthStart = DateTime(
+            _selectedMonth.year,
+            _selectedMonth.month + 1,
+          );
+
+          final transactions = allTransactions
+              .where(
+                (transaction) =>
+                    !transaction.transactionDate.isBefore(monthStart) &&
+                    transaction.transactionDate.isBefore(nextMonthStart),
+              )
+              .toList();
 
           final income = transactions
               .where((transaction) => transaction.type == 'Income')
@@ -69,6 +86,24 @@ class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
               );
 
           final netChange = income - expenses;
+
+          final openingBalance = allTransactions
+              .where(
+                (transaction) =>
+                    transaction.transactionDate.isBefore(monthStart),
+              )
+              .fold<double>(
+            0,
+            (balance, transaction) {
+              if (transaction.type == 'Income') {
+                return balance + transaction.amount;
+              }
+
+              return balance - transaction.amount;
+            },
+          );
+
+          final closingBalance = openingBalance + netChange;
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -100,6 +135,12 @@ class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
               ),
               const SizedBox(height: 20),
               _SummaryCard(
+                title: 'Opening Balance',
+                amount: _formatAmount(openingBalance),
+                icon: Icons.account_balance_wallet_outlined,
+              ),
+              const SizedBox(height: 12),
+              _SummaryCard(
                 title: 'Income',
                 amount: _formatAmount(income),
                 icon: Icons.arrow_downward_rounded,
@@ -114,7 +155,13 @@ class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
               _SummaryCard(
                 title: 'Net Change',
                 amount: _formatAmount(netChange),
-                icon: Icons.account_balance_wallet_rounded,
+                icon: Icons.swap_vert_rounded,
+              ),
+              const SizedBox(height: 12),
+              _SummaryCard(
+                title: 'Closing Balance',
+                amount: _formatAmount(closingBalance),
+                icon: Icons.account_balance_rounded,
               ),
               const SizedBox(height: 20),
               Card(
@@ -137,6 +184,35 @@ class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: const CircleAvatar(
+                    child: Icon(
+                      Icons.calendar_view_month_rounded,
+                    ),
+                  ),
+                  title: const Text(
+                    'Yearly Summary',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'View the complete yearly breakdown',
+                  ),
+                  trailing: const Icon(
+                    Icons.chevron_right_rounded,
+                  ),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const YearlySummaryPage(),
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
