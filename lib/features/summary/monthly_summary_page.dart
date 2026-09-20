@@ -4,17 +4,31 @@ import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
 
 class MonthlySummaryPage extends StatefulWidget {
-  const MonthlySummaryPage({super.key});
+  const MonthlySummaryPage({
+    super.key,
+    this.initialMonth,
+  });
+
+  final DateTime? initialMonth;
 
   @override
   State<MonthlySummaryPage> createState() => _MonthlySummaryPageState();
 }
 
 class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
-  DateTime _selectedMonth = DateTime(
-    DateTime.now().year,
-    DateTime.now().month,
-  );
+  late DateTime _selectedMonth;
+
+  @override
+  void initState() {
+    super.initState();
+
+    final month = widget.initialMonth ?? DateTime.now();
+
+    _selectedMonth = DateTime(
+      month.year,
+      month.month,
+    );
+  }
 
   void _changeMonth(int monthOffset) {
     setState(() {
