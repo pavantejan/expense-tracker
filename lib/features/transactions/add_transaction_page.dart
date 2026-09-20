@@ -8,6 +8,8 @@ import '../../data/database/app_database.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
 
+import '../../core/categories/category.dart';
+
 class AddTransactionPage extends StatefulWidget {
   const AddTransactionPage({
     super.key,
@@ -33,17 +35,6 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   final _notesController = TextEditingController();
 
   final _uuid = const Uuid();
-
-  final _categories = [
-    'Food',
-    'Travel',
-    'Shopping',
-    'Bills',
-    'Entertainment',
-    'Health',
-    'Education',
-    'Other',
-  ];
 
   final _paymentMethods = [
     'UPI',
@@ -237,11 +228,17 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                 labelText: 'Category',
                 border: OutlineInputBorder(),
               ),
-              items: _categories
+              items: expenseCategories
                   .map(
                     (category) => DropdownMenuItem(
-                      value: category,
-                      child: Text(category),
+                      value: category.name,
+                      child: Row(
+                        children: [
+                          Icon(category.icon, size: 20),
+                          const SizedBox(width: 12),
+                          Text(category.name),
+                        ],
+                      ),
                     ),
                   )
                   .toList(),

@@ -7,6 +7,7 @@ import '../../data/notifications/notification.dart';
 import '../transactions/add_transaction_page.dart';
 import '../transactions/all_transactions_page.dart';
 import '../settings/settings_page.dart';
+import '../../core/categories/category.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -708,7 +709,7 @@ class _TransactionCard extends StatelessWidget {
           child: Icon(
             isIncome
                 ? Icons.arrow_downward_rounded
-                : Icons.arrow_upward_rounded,
+                : _categoryIcon(transaction.category),
           ),
         ),
         title: Text(
@@ -731,6 +732,15 @@ class _TransactionCard extends StatelessWidget {
         ),
       ),
     );
+  }
+  IconData _categoryIcon(String categoryName) {
+    for (final category in expenseCategories) {
+      if (category.name == categoryName) {
+        return category.icon;
+      }
+    }
+
+    return Icons.more_horiz_rounded;
   }
 }
 
