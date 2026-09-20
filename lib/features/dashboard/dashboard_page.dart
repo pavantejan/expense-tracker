@@ -5,6 +5,7 @@ import '../../data/database/app_database.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
 import '../../core/categories/category.dart';
+import '../analytics/monthly_category_analytics_page.dart';
 import '../transactions/add_transaction_page.dart';
 import '../transactions/all_transactions_page.dart';
 import '../settings/settings_page.dart';
@@ -283,6 +284,39 @@ class _DashboardPageState extends State<DashboardPage> {
                       Navigator.of(context).push(
                         MaterialPageRoute(
                           builder: (_) => MonthlySummaryPage(
+                            initialMonth: _selectedMonth,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: ListTile(
+                    leading: const CircleAvatar(
+                      child: Icon(
+                        Icons.pie_chart_outline_rounded,
+                      ),
+                    ),
+                    title: const Text(
+                      'Category Analytics',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'See where you spent in '
+                      '${_formatMonth(_selectedMonth)}',
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right_rounded,
+                    ),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              MonthlyCategoryAnalyticsPage(
                             initialMonth: _selectedMonth,
                           ),
                         ),
