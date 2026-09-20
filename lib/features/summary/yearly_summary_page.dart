@@ -4,14 +4,26 @@ import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
 
 class YearlySummaryPage extends StatefulWidget {
-  const YearlySummaryPage({super.key});
+  const YearlySummaryPage({
+    super.key,
+    this.initialYear,
+  });
+
+  final int? initialYear;
 
   @override
   State<YearlySummaryPage> createState() => _YearlySummaryPageState();
 }
 
 class _YearlySummaryPageState extends State<YearlySummaryPage> {
-  int _selectedYear = DateTime.now().year;
+  late int _selectedYear;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _selectedYear = widget.initialYear ?? DateTime.now().year;
+  }
 
   void _changeYear(int yearOffset) {
     setState(() {

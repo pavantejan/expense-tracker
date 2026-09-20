@@ -209,7 +209,9 @@ class _MonthlySummaryPageState extends State<MonthlySummaryPage> {
                   onTap: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => const YearlySummaryPage(),
+                        builder: (_) => YearlySummaryPage(
+                          initialYear: _selectedMonth.year,
+                        ),
                       ),
                     );
                   },
