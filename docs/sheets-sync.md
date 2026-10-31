@@ -610,6 +610,25 @@ background sync itself still never calls `initialize()`,
   checks `mounted` immediately after
   `_refreshAuthorizationStatus()` before using
   `ScaffoldMessenger`/`context`.
+- **Startup failure fallback (round 6).** Initialization
+  runs inside the same try/finally as the restore attempt
+  in `_doRestore()`, so restoration state always settles to
+  `signedIn` or `signedOut` — even if GoogleSignIn
+  initialization throws, Settings never shows "Checking
+  your Google account…" indefinitely. `restoreOnStartup()`
+  swallows initialization/restoration errors so the
+  unawaited startup future never produces an unhandled
+  asynchronous error; background sync still runs
+  afterwards and stays silent with work pending. No local
+  transactions or pending sync records are cleared on
+  failure, and a later Settings sign-in re-runs
+  initialization and restoration. The Settings-initiated
+  `restoreSession()` path still propagates errors so its
+  UI can report them. No `authenticate()` or
+  `authorizeScopes()` call is added at startup, and
+  lightweight authentication on Android remains not
+  guaranteed to be silent (google_sign_in 7.x migration
+  guide).
 
 ## Verification — results on the pushed commit (round 5, 31 Oct 2026)
 
@@ -647,3 +666,38 @@ succeeded (exit 0, `pubspec.lock` unchanged).
   round-4 section). The APK build is part of Pavan's
   manual validation on his Windows machine against the
   pushed commit SHA.
+
+## Verification — results on the pushed commit (round 6, 31 Oct 2026)
+
+Focused robustness fix only: initialization moved inside
+the `_doRestore()` try/finally, and `restoreOnStartup()`
+swallows startup restoration errors. Successful restoration
+behaviour, SnackBar duration/persist/Undo, and the Settings
+restore path are unchanged. This section describes the
+checks run on the exact tree in the commit that carries
+this section (the Dart tree is identical to the tree the
+checks ran on; only this documentation section was added
+afterwards in the same commit).
+
+Toolchain: Flutter 3.47.2 / Dart 3.13.2
+(`~/workspace/build-verify/flutter/`).
+
+- `dart format` — check run over all 12 PR Dart files:
+  "Formatted 12 files (0 changed)".
+- `flutter analyze` — exit code 1, "4 issues found":
+  0 errors, 0 warnings, 4 infos only.
+- `flutter test test/sheets_sync_test.dart` — exit 0,
+  44/44 passed ("All tests passed!").
+- Full `flutter test` — exit 1: 44 passed, 1 failed.
+  The failure is the same pre-existing `test/widget_test.dart`
+  ("A Timer is still pending", drift stack) that was run
+  against base commit `2231948` in round 4 and failed there
+  too with the same signature; it is not hidden and is not
+  introduced by this commit. The initialization-throw
+  edge case itself cannot be exercised by the existing
+  test suite (the auth service wraps the platform plugin
+  singleton); it is a code-path guarantee verified by
+  inspection and by analyze, and remains part of the
+  manual Android checklist.
+- `flutter build apk --debug` — not run in this
+  environment (no Android SDK/JDK).

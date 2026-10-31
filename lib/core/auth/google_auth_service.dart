@@ -200,7 +200,24 @@ class GoogleAuthService {
   /// Sheets authorization still shows the explicit "Authorize
   /// Google Sheets" action in Settings, never another sign-in
   /// prompt.
-  Future<void> restoreOnStartup() => restoreSession();
+  ///
+  /// Startup failure fallback: if initialization or
+  /// restoration throws, the error is swallowed here so the
+  /// unawaited startup future in `main.dart` never produces
+  /// an unhandled asynchronous error. Restoration state has
+  /// already settled to `signedOut` (see [_doRestore]), local
+  /// transactions and pending sync records are untouched, and
+  /// the user can still sign in from Settings; a later
+  /// Settings attempt re-runs initialization and restoration.
+  /// [restoreSession] does NOT swallow errors: a
+  /// Settings-initiated restoration reports them to its UI.
+  Future<void> restoreOnStartup() async {
+    try {
+      await restoreSession();
+    } catch (_) {
+      // Best-effort startup restoration; see above.
+    }
+  }
 
   /// Restores a previous session: from app startup via
   /// [restoreOnStartup], or after an explicit user action in
@@ -218,7 +235,10 @@ class GoogleAuthService {
   /// is treated as signed out for this attempt only — local data
   /// and pending sync work are untouched, and the user can sign
   /// in interactively from Settings. Concurrent callers share
-  /// one restoration.
+  /// one restoration. Errors from initialization or restoration
+  /// propagate to the caller (Settings reports them in its UI);
+  /// the startup path swallows them instead, see
+  /// [restoreOnStartup].
   Future<void> restoreSession() {
     final inFlight = _restoreFuture;
     if (inFlight != null) {
@@ -231,8 +251,14 @@ class GoogleAuthService {
   }
 
   Future<void> _doRestore() async {
-    await initialize();
+    // Initialization is inside the try/finally on purpose: if
+    // GoogleSignIn initialization throws, restoration state
+    // must still settle to `signedIn` or `signedOut` instead of
+    // staying `checking` forever, and no local data is touched.
+    // The error itself propagates to the caller (swallowed only
+    // by the startup path, see [restoreOnStartup]).
     try {
+      await initialize();
       await _doRestoreAttempt();
     } finally {
       _setRestorationState(
