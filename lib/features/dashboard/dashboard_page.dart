@@ -687,6 +687,12 @@ Future<void> _showDeleteConfirmation(
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       content: const Text('Transaction deleted'),
+      // A SnackBar with an action defaults to persist: true, which
+      // kept the Undo bar on screen until tapped. Explicitly
+      // auto-dismiss after 5 seconds; Undo still works within
+      // that window.
+      duration: const Duration(seconds: 5),
+      persist: false,
       action: SnackBarAction(
         label: 'UNDO',
         onPressed: () async {
@@ -708,9 +714,13 @@ Future<void> _showDeleteConfirmation(
 
           unawaited(sheetsSyncCoordinator.requestSync());
 
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Transaction restored')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Transaction restored'),
+              duration: Duration(seconds: 5),
+              persist: false,
+            ),
+          );
         },
       ),
     ),

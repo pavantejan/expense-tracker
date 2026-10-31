@@ -21,6 +21,12 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isSyncing = false;
   bool _isAuthorizing = false;
 
+  /// True while the one-time startup account restoration has not
+  /// settled. The signed-out UI must not be shown as final until
+  /// this clears.
+  bool _isRestoring = true;
+  StreamSubscription<AuthRestorationState>? _restorationSubscription;
+
   /// `null` while unchecked (or signed out). `true` when signed
   /// in but Sheets scopes are not yet authorized — the explicit
   /// authorize action in this page is then the way forward.
@@ -29,7 +35,28 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    _isRestoring =
+        _googleAuthService.restorationState == AuthRestorationState.checking;
+    _restorationSubscription = _googleAuthService.restorationStateStream.listen(
+      (state) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _isRestoring = state == AuthRestorationState.checking;
+        });
+        if (state != AuthRestorationState.checking) {
+          unawaited(_refreshAuthorizationStatus());
+        }
+      },
+    );
     unawaited(_refreshAuthorizationStatus());
+  }
+
+  @override
+  void dispose() {
+    unawaited(_restorationSubscription?.cancel());
+    super.dispose();
   }
 
   Future<void> _refreshAuthorizationStatus() async {
@@ -93,15 +120,14 @@ class _SettingsPageState extends State<SettingsPage> {
   // GOOGLE SIGN IN
   // ============================================================
 
-  /// Explicit reconnect / sign-in, from this button tap only.
+  /// Explicit sign-in, from this button tap only.
   ///
-  /// After an app restart there is no in-memory session, and
-  /// background sync never restores one on its own. Tapping
-  /// this button first tries an explicit restore of the
-  /// previous session (which may itself show an account
-  /// sheet — that is allowed here because the user tapped),
-  /// then falls back to interactive sign-in when no session
-  /// was restored.
+  /// The previously authenticated account is normally restored
+  /// automatically once at app startup. Tapping this button
+  /// first tries an explicit restore of the previous session
+  /// (which may itself show an account sheet — that is allowed
+  /// here because the user tapped), then falls back to
+  /// interactive sign-in when no session was restored.
   Future<void> _signInWithGoogle() async {
     setState(() {
       _isLoading = true;
@@ -120,6 +146,10 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {});
 
       await _refreshAuthorizationStatus();
+
+      if (!mounted) {
+        return;
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Google account connected successfully.')),
@@ -275,6 +305,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final email = _userEmail;
+    final isRestoring = _isRestoring;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -316,16 +347,25 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              email ?? 'Not connected',
+                              isRestoring
+                                  ? 'Checking your Google account…'
+                                  : email ?? 'Not connected',
                               style: theme.textTheme.bodyMedium,
                             ),
-                            if (email == null) ...[
+                            if (isRestoring) ...[
                               const SizedBox(height: 4),
                               Text(
-                                'After restarting the app, sign in here '
-                                'to reconnect Google Sheets backup. '
-                                'Background sync never signs you in '
-                                'on its own.',
+                                'Restoring your previous Google sign-in…',
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ] else if (email == null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'Sign in to enable Google Sheets backup. '
+                                'If you signed in before, the app restores '
+                                'your account automatically when it starts. '
+                                'Background sync never asks for Sheets '
+                                'permission on its own.',
                                 style: theme.textTheme.bodySmall,
                               ),
                             ],
@@ -339,7 +379,17 @@ class _SettingsPageState extends State<SettingsPage> {
 
                   SizedBox(
                     width: double.infinity,
-                    child: email == null
+                    child: isRestoring
+                        ? FilledButton.icon(
+                            onPressed: null,
+                            icon: const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            label: const Text('Checking…'),
+                          )
+                        : email == null
                         ? FilledButton.icon(
                             onPressed: _isLoading ? null : _signInWithGoogle,
                             icon: _isLoading

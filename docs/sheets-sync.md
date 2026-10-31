@@ -73,7 +73,10 @@ corrections land as a follow-up commit on the same branch.
 
 - **Background authentication must not show UI (review §1,
   supersedes the "silent authorization" / restore claims in
-  the second-commit notes and the Auth bullet below).**
+  the second-commit notes and the Auth bullet below; the
+  Settings-only restoration rule in this bullet is itself
+  superseded in part by the startup-restoration section at
+  the end of this document).**
   The google_sign_in 7.x migration guide states
   `attemptLightweightAuthentication()` "is no longer
   guaranteed to be silent. For example, as of the publishing
@@ -332,7 +335,8 @@ corrections land as a follow-up commit on the same branch.
   after sign-in, from a Settings "Retry sync" action, and
   best-effort on app start. It never blocks local saving.
 - **Auth (superseded by the third-commit corrections
-  above — background sync never restores).** `GoogleAuthService` now subscribes to
+  above and by the startup-restoration section at the end
+  of this document).** `GoogleAuthService` now subscribes to
   `authenticationEvents` (pub.dev google_sign_in example pattern)
   and `restoreSession()` calls `attemptLightweightAuthentication()`
   after `initialize()`, so a previous session can be restored
@@ -553,3 +557,93 @@ succeeded (exit 0, `pubspec.lock` unchanged).
   `flutter doctor` likewise reports "Unable to locate
   Android SDK." No APK or build pass is claimed; the
   build needs a machine with a valid Android SDK/JDK.
+
+## Startup account restoration and SnackBar auto-dismiss (round 5)
+
+This section supersedes the Settings-only restoration rule
+from the third-commit corrections above. The background-sync
+constraints from that review are otherwise unchanged:
+background sync itself still never calls `initialize()`,
+`attemptLightweightAuthentication()`, `authenticate()`, or
+`authorizeScopes()`; it reads only the in-memory account.
+
+- **Startup restoration.** `main.dart` calls
+  `GoogleAuthService.restoreOnStartup()` exactly once at
+  startup (unawaited; the app UI is not blocked). It shares
+  one in-flight restoration with the Settings
+  `restoreSession()` path, initialization is idempotent, and
+  the `authenticationEvents` subscription is created once
+  and retained. Restoration calls only
+  `attemptLightweightAuthentication()` and handles both
+  return modes (nullable `Future` awaited; no `Future` →
+  bounded 2s wait for the stream). It never calls
+  `authenticate()` or `authorizeScopes()`, never stores
+  tokens manually, and never loops or shows an
+  account-picker/consent prompt of its own. It may show
+  minimal platform-controlled UI on Android and is not
+  claimed to be guaranteed silent. Background sync runs
+  after restoration settles, so it can use the restored
+  account; if no account was restored, sync stays silent
+  and work stays pending.
+- **Restoring state.** The service exposes
+  `AuthRestorationState` (`checking` / `signedIn` /
+  `signedOut`) synchronously and as a broadcast stream.
+  Settings listens to it, shows "Checking your Google
+  account…" with a disabled button while restoration is in
+  progress (never the signed-out UI as final), then shows
+  the connected account email or the normal sign-in button.
+  If authentication is restored but Sheets authorization is
+  missing, Settings shows the separate "Authorize Google
+  Sheets" action; it does not ask for Google sign-in again.
+  Explicit sign-out and revocation clear only the in-memory
+  session (sign-out events move the state to `signedOut`);
+  local transactions and pending sync records are untouched.
+- **SnackBars.** The delete SnackBar (dashboard and
+  all-transactions pages) and the "Transaction restored"
+  SnackBar now set `duration: Duration(seconds: 5)` and
+  `persist: false`. Root cause: a SnackBar with an action
+  defaults to `persist: true` in this Flutter version, so
+  the Undo bar stayed until tapped despite the default
+  duration. Undo behaviour is unchanged and works within
+  the five seconds.
+- **Mounted check.** `_signInWithGoogle()` in Settings now
+  checks `mounted` immediately after
+  `_refreshAuthorizationStatus()` before using
+  `ScaffoldMessenger`/`context`.
+
+## Verification — results on the pushed commit (round 5, 31 Oct 2026)
+
+This section describes the checks run on the exact tree in
+the commit that carries this section. It supersedes the
+round-4 verification section above for this commit; the
+round-4 results still describe the previous commit.
+
+Toolchain: Flutter 3.47.2 / Dart 3.13.2
+(`~/workspace/build-verify/flutter/`). `flutter pub get`
+succeeded (exit 0, `pubspec.lock` unchanged).
+
+- `dart format` — check run over all 12 PR Dart files:
+  "Formatted 12 files (0 changed)" after formatting
+  `settings_page.dart` (the only file that needed it).
+- `flutter analyze` — exit code 1, "4 issues found":
+  0 errors, 0 warnings, 4 infos only (initializing-formal
+  patterns). The previous `use_build_context_synchronously`
+  info in Settings is gone after the new mounted check.
+- `flutter test test/sheets_sync_test.dart` — exit 0,
+  44/44 passed ("All tests passed!").
+- Full `flutter test` — exit 1: 44 passed, 1 failed.
+  The failure is the same pre-existing `test/widget_test.dart`
+  ("A Timer is still pending", drift stack) that was run
+  against base commit `2231948` in round 4 and failed there
+  too with the same signature; it is not hidden and is not
+  introduced by this commit. No new test was added: the
+  auth service wraps the platform plugin singleton and
+  cannot be unit-tested without new dev dependencies (see
+  the earlier testability note), so startup restoration
+  and the SnackBar timing are covered by the manual
+  Android checklist in the PR description.
+- `flutter build apk --debug` — not run in this round:
+  no Android SDK/JDK exists in this environment (see the
+  round-4 section). The APK build is part of Pavan's
+  manual validation on his Windows machine against the
+  pushed commit SHA.

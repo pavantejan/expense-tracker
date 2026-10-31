@@ -15,20 +15,24 @@ import '../sync/sheets_sync.dart';
 ///
 /// - **Background / in-memory-only** (`allowInteractiveAuthorization:
 ///   false`, the default): reads only the in-memory signed-in
-///   account (`_currentUser`), set during this app session by an
-///   explicit Settings sign-in or by `authenticationEvents`.
-///   It never calls `initialize()`, `attemptLightweightAuthentication()`,
-///   `authenticate()`, or `authorizeScopes()`. If there is no
-///   in-memory account it throws [SheetsNotSignedInException];
-///   if the scopes are not already authorized it inspects that
-///   with `authorizationForScopes` only and throws
+///   account (`_currentUser`). That account is populated once at
+///   app startup by [restoreOnStartup] (called from `main.dart`)
+///   and afterwards by the retained `authenticationEvents`
+///   subscription and explicit Settings actions. The background
+///   path itself never calls `initialize()`,
+///   `attemptLightweightAuthentication()`, `authenticate()`, or
+///   `authorizeScopes()`. If there is no in-memory account it
+///   throws [SheetsNotSignedInException]; if the scopes are not
+///   already authorized it inspects that with
+///   `authorizationForScopes` only and throws
 ///   [SheetsAuthorizationMissingException]. Pending work is
-///   retained in both cases. This is the mode used by background
-///   sync, including app startup (`main.dart`).
+///   retained in both cases.
 /// - **Interactive / user-initiated** (`allowInteractiveAuthorization:
 ///   true`, only from an explicit Settings action): may call
-///   `attemptLightweightAuthentication()` (via [restoreSession]),
-///   `authenticate()`, and `authorizeScopes`.
+///   `authenticate()` and `authorizeScopes`. Account restoration
+///   ([restoreSession]/[restoreOnStartup]) is shared with the
+///   startup path and is the only other place that calls
+///   `attemptLightweightAuthentication()`.
 ///
 /// `attemptLightweightAuthentication()` is NOT guaranteed to be
 /// silent: the google_sign_in 7.x migration guide states it "is
@@ -38,10 +42,14 @@ import '../sync/sheets_sync.dart';
 /// It is also "no longer guaranteed to return a future": on
 /// platforms where it returns no `Future`, the result arrives
 /// through the `authenticationEvents` stream instead. That is
-/// why [restoreSession] is Settings-only and handles both a
-/// nullable returned `Future` and the stream, and why no
-/// comment or document in this PR may claim lightweight
-/// authentication is guaranteed silent.
+/// why restoration handles both a nullable returned `Future`
+/// and the stream, and why no comment or document in this PR
+/// may claim lightweight authentication is guaranteed silent.
+/// Startup restoration may therefore show minimal
+/// platform-controlled UI on Android; it never calls
+/// `authenticate()` or `authorizeScopes()`, never shows an
+/// account picker or consent prompt of its own, and never
+/// loops: it runs once at startup, shared and idempotent.
 ///
 /// `authorizationForScopes` is the silent inspection method: it
 /// returns an access token if the requested scopes are already
@@ -62,14 +70,21 @@ import '../sync/sheets_sync.dart';
 ///
 /// No tokens, secrets, or transaction data are logged here. The
 /// web client id below is a public OAuth client id, not a secret;
-/// no service-account credentials are embedded anywhere in the app.
+/// no service-account credentials are embedded anywhere in the app,
+/// and no access or refresh token is ever stored manually: the
+/// plugin owns the session.
 ///
 /// This file was written against google_sign_in 7.2.0 as
-/// described in the pub.dev page and migration guide. Compile/
-/// analyze could not be run in the implementation environment;
-/// the reviewer must verify these calls with `flutter analyze`
-/// on a Flutter machine, including the nullable-Future handling
-/// in [restoreSession].
+/// described in the pub.dev page and migration guide.
+/// State of the one-time startup account restoration.
+///
+/// - [checking]: restoration has not settled yet. Callers must
+///   not show the signed-out UI as final while in this state.
+/// - [signedIn]: a signed-in account is held in memory.
+/// - [signedOut]: restoration settled with no account, or the
+///   user signed out / the session ended afterwards.
+enum AuthRestorationState { checking, signedIn, signedOut }
+
 class GoogleAuthService {
   GoogleAuthService._();
 
@@ -95,6 +110,30 @@ class GoogleAuthService {
   StreamSubscription<GoogleSignInAuthenticationEvent>? _authSubscription;
   Completer<GoogleSignInAccount?>? _restoreCompleter;
   GoogleSignInAccount? _currentUser;
+
+  AuthRestorationState _restorationState = AuthRestorationState.checking;
+  final StreamController<AuthRestorationState> _restorationController =
+      StreamController<AuthRestorationState>.broadcast();
+
+  /// Current restoration state. Starts as [AuthRestorationState.checking]
+  /// and settles once the startup restoration completes, or when the
+  /// session changes afterwards.
+  AuthRestorationState get restorationState => _restorationState;
+
+  /// Broadcast stream of restoration-state changes. Listeners (for
+  /// example Settings) rebuild when restoration settles or the
+  /// session changes. The current state is available synchronously
+  /// from [restorationState], so a new listener never misses it.
+  Stream<AuthRestorationState> get restorationStateStream =>
+      _restorationController.stream;
+
+  void _setRestorationState(AuthRestorationState state) {
+    if (_restorationState == state || _restorationController.isClosed) {
+      return;
+    }
+    _restorationState = state;
+    _restorationController.add(state);
+  }
 
   Future<void> initialize() {
     final inFlight = _initializeFuture;
@@ -136,6 +175,11 @@ class GoogleAuthService {
       GoogleSignInAuthenticationEventSignOut() => null,
     };
     _currentUser = user;
+    _setRestorationState(
+      user != null
+          ? AuthRestorationState.signedIn
+          : AuthRestorationState.signedOut,
+    );
 
     final completer = _restoreCompleter;
     if (completer != null && !completer.isCompleted) {
@@ -143,9 +187,26 @@ class GoogleAuthService {
     }
   }
 
-  /// Restores a previous session after an explicit user action in
-  /// Settings. SETTINGS-ONLY: never call this from background
-  /// sync, app startup, or any other non-interactive path.
+  /// Restores the previously authenticated account once, during
+  /// app startup. Called exactly once from `main.dart`; safe to
+  /// call again (concurrent callers share one restoration, and
+  /// initialization is idempotent).
+  ///
+  /// Only calls `attemptLightweightAuthentication()` — never
+  /// `authenticate()` or `authorizeScopes()`, and never stores
+  /// tokens manually. It may show minimal platform-controlled
+  /// UI on Android and is not claimed to be silent. Sheets
+  /// authorization stays separate: a restored account without
+  /// Sheets authorization still shows the explicit "Authorize
+  /// Google Sheets" action in Settings, never another sign-in
+  /// prompt.
+  Future<void> restoreOnStartup() => restoreSession();
+
+  /// Restores a previous session: from app startup via
+  /// [restoreOnStartup], or after an explicit user action in
+  /// Settings. Both paths share one restoration, so a Settings
+  /// tap while startup restoration is in flight waits for the
+  /// same attempt instead of starting a second one.
   ///
   /// `attemptLightweightAuthentication()` may show UI (see the
   /// class documentation) and may not return a `Future`. When it
@@ -171,7 +232,18 @@ class GoogleAuthService {
 
   Future<void> _doRestore() async {
     await initialize();
+    try {
+      await _doRestoreAttempt();
+    } finally {
+      _setRestorationState(
+        _currentUser != null
+            ? AuthRestorationState.signedIn
+            : AuthRestorationState.signedOut,
+      );
+    }
+  }
 
+  Future<void> _doRestoreAttempt() async {
     if (_currentUser != null) {
       return;
     }
@@ -234,6 +306,7 @@ class GoogleAuthService {
     final user = await _googleSignIn.authenticate();
 
     _currentUser = user;
+    _setRestorationState(AuthRestorationState.signedIn);
 
     return user;
   }
@@ -244,6 +317,11 @@ class GoogleAuthService {
     await _googleSignIn.signOut();
 
     _currentUser = null;
+    // Local transactions and pending sync records are untouched:
+    // only the in-memory session is cleared. The next startup
+    // restoration may restore the account again unless access
+    // was revoked; the signed-out UI is shown until then.
+    _setRestorationState(AuthRestorationState.signedOut);
   }
 
   GoogleSignInAccount? get currentUser => _currentUser;
@@ -317,11 +395,11 @@ class GoogleAuthService {
   /// Inspect existing authorization only, for the in-memory
   /// session. Returns `true` when the sync scopes are already
   /// authorized for the signed-in user, `false` otherwise.
-  /// Never restores, signs in, or prompts: after an app restart
-  /// it returns `false` until the user reconnects from
-  /// Settings, which is the intended behaviour. Used by
-  /// Settings to decide whether to show the explicit authorize
-  /// action.
+  /// Never restores, signs in, or prompts: before startup
+  /// restoration settles it returns `false`, and after an app
+  /// restart it returns `false` until restoration completes or
+  /// the user reconnects from Settings. Used by Settings to
+  /// decide whether to show the explicit authorize action.
   Future<bool> hasSyncAuthorization() async {
     final user = _currentUser;
     if (user == null) {
