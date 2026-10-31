@@ -1,13 +1,30 @@
+import 'dart:async';
+
+import 'package:expense_tracker/core/sync/google_sheets_backend.dart';
 import 'package:expense_tracker/core/sync/sheets_sync.dart';
 import 'package:expense_tracker/core/sync/sync_coordinator.dart';
 import 'package:expense_tracker/data/notifications/notification.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+// ---------------------------------------------------------------------------
+// Fakes for the SheetsSyncBackend boundary (engine + coordinator tests)
+// ---------------------------------------------------------------------------
 
 class FakeSheetsBackend implements SheetsSyncBackend {
   final Map<int, List<SheetRowData>> sheets = <int, List<SheetRowData>>{};
   int resolveCalls = 0;
   bool failResolve = false;
   bool failNextWrite = false;
+  bool failNextAppend = false;
+  bool failNextUpdate = false;
+  int appendCalls = 0;
+  int updateCalls = 0;
+
+  /// When set, appendRow signals [writeStarted] and waits for
+  /// [writeGate] before writing. Used for deterministic
+  /// pause/edit and trigger-during-run tests.
+  Completer<void>? writeGate;
+  final Completer<void> writeStarted = Completer<void>();
 
   @override
   Future<String> resolveSpreadsheetId() async {
@@ -33,10 +50,12 @@ class FakeSheetsBackend implements SheetsSyncBackend {
     String spreadsheetId,
     int year,
   ) async {
-    return List<SheetRowData>.unmodifiable(sheets[year] ?? const <SheetRowData>[]);
+    return List<SheetRowData>.unmodifiable(
+      sheets[year] ?? const <SheetRowData>[],
+    );
   }
 
-  void _maybeFail() {
+  void _maybeFailNext() {
     if (failNextWrite) {
       failNextWrite = false;
       throw Exception('Sheets write failed');
@@ -49,9 +68,20 @@ class FakeSheetsBackend implements SheetsSyncBackend {
     int year,
     SheetRowData row,
   ) async {
-    _maybeFail();
+    final gate = writeGate;
+    if (gate != null) {
+      if (!writeStarted.isCompleted) {
+        writeStarted.complete();
+      }
+      await gate.future;
+    }
+    if (failNextAppend) {
+      failNextAppend = false;
+      throw Exception('Sheets append failed');
+    }
+    _maybeFailNext();
+    appendCalls++;
     final rows = sheets.putIfAbsent(year, () => <SheetRowData>[]);
-    // Header is row 1; the first data row is row 2.
     rows.add(row.copyWith(rowIndex: rows.length + 2));
   }
 
@@ -62,7 +92,12 @@ class FakeSheetsBackend implements SheetsSyncBackend {
     int rowIndex,
     SheetRowData row,
   ) async {
-    _maybeFail();
+    if (failNextUpdate) {
+      failNextUpdate = false;
+      throw Exception('Sheets update failed');
+    }
+    _maybeFailNext();
+    updateCalls++;
     final rows = sheets.putIfAbsent(year, () => <SheetRowData>[]);
     final index = rows.indexWhere((r) => r.rowIndex == rowIndex);
     if (index == -1) {
@@ -76,24 +111,99 @@ class FakeSheetsBackend implements SheetsSyncBackend {
         .where((row) => !row.deleted)
         .toList();
   }
+
+  void seedRow(int year, SheetRowData row) {
+    final rows = sheets.putIfAbsent(year, () => <SheetRowData>[]);
+    rows.add(row.copyWith(rowIndex: rows.length + 2));
+  }
 }
 
+/// Fake store with conditional acknowledgement: a row is marked
+/// synced only when the stored revision (updatedAt + deleted) and
+/// pending state still match the uploaded snapshot. Editing a
+/// transaction advances its revision and keeps it pending.
 class FakeStore implements SyncTransactionStore {
-  FakeStore(this.pending);
+  FakeStore(List<SyncTransaction> initial) {
+    for (final tx in initial) {
+      _entries[tx.localId] = _Entry(tx, pending: true);
+    }
+  }
 
-  List<SyncTransaction> pending;
+  final Map<int, _Entry> _entries = <int, _Entry>{};
+  bool failNextAck = false;
   final List<int> markedSynced = <int>[];
+
+  List<SyncTransaction> get pending =>
+      _entries.values.where((e) => e.pending).map((e) => e.tx).toList();
+
+  void add(SyncTransaction tx) {
+    _entries[tx.localId] = _Entry(tx, pending: true);
+  }
+
+  SyncTransaction? entry(int localId) => _entries[localId]?.tx;
+
+  void edit({
+    required int localId,
+    double? amount,
+    DateTime? transactionDate,
+    bool? deleted,
+    String? description,
+  }) {
+    final entry = _entries[localId];
+    if (entry == null) {
+      throw StateError('No entry $localId');
+    }
+    final old = entry.tx;
+    final nextUpdatedAt =
+        old.updatedAt.add(const Duration(seconds: 1));
+    _entries[localId] = _Entry(
+      SyncTransaction(
+        localId: old.localId,
+        uuid: old.uuid,
+        transactionDate: transactionDate ?? old.transactionDate,
+        type: old.type,
+        category: old.category,
+        description: description ?? old.description,
+        amount: amount ?? old.amount,
+        paymentMethod: old.paymentMethod,
+        notes: old.notes,
+        updatedAt: nextUpdatedAt,
+        deleted: deleted ?? old.deleted,
+      ),
+      pending: true,
+    );
+  }
 
   @override
   Future<List<SyncTransaction>> getPending() async {
-    return List<SyncTransaction>.unmodifiable(pending);
+    return pending;
   }
 
   @override
-  Future<void> markSynced(int localId) async {
-    markedSynced.add(localId);
-    pending = pending.where((tx) => tx.localId != localId).toList();
+  Future<bool> markSynced(SyncTransaction transaction) async {
+    if (failNextAck) {
+      failNextAck = false;
+      return false;
+    }
+    final entry = _entries[transaction.localId];
+    if (entry == null || !entry.pending) {
+      return false;
+    }
+    if (entry.tx.updatedAt != transaction.updatedAt ||
+        entry.tx.deleted != transaction.deleted) {
+      return false;
+    }
+    _entries[transaction.localId] = _Entry(entry.tx, pending: false);
+    markedSynced.add(transaction.localId);
+    return true;
   }
+}
+
+class _Entry {
+  const _Entry(this.tx, {required this.pending});
+
+  final SyncTransaction tx;
+  final bool pending;
 }
 
 SyncTransaction makeTx({
@@ -123,6 +233,175 @@ SyncTransaction makeTx({
     updatedAt: updatedAt ?? DateTime(2026, 3, 10, 12),
     deleted: deleted,
   );
+}
+
+Future<void> runEngine(
+  SheetsSyncEngine engine,
+  FakeSheetsBackend backend,
+  FakeStore store,
+) async {
+  await engine.syncAll(
+    pending: await store.getPending(),
+    backend: backend,
+    onSynced: (tx) => store.markSynced(tx),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fake SheetsApiClient (error-classification + authorization-mode tests)
+// ---------------------------------------------------------------------------
+
+class FakeSheetsApiClient implements SheetsApiClient {
+  final Map<int, List<List<Object?>>> sheets = <int, List<List<Object?>>>{};
+  SheetsApiException? titlesError;
+  SheetsApiException? readError;
+  SheetsApiException? writeError;
+  int titlesCalls = 0;
+
+  @override
+  Future<String> resolveSpreadsheetId() async => 'spreadsheet-1';
+
+  @override
+  Future<List<String>> sheetTitles(String spreadsheetId) async {
+    titlesCalls++;
+    final error = titlesError;
+    if (error != null) {
+      throw error;
+    }
+    return sheets.keys.map((y) => '$y').toList();
+  }
+
+  @override
+  Future<List<List<Object?>>> readValues(
+    String spreadsheetId,
+    String range,
+  ) async {
+    final error = readError;
+    if (error != null) {
+      throw error;
+    }
+    final year = int.parse(range.replaceAll("'", '').split('!').first);
+    return sheets[year] ?? const <List<Object?>>[];
+  }
+
+  @override
+  Future<void> updateValues(
+    String spreadsheetId,
+    String range,
+    List<List<Object?>> values, {
+    required bool userEntered,
+  }) async {
+    final error = writeError;
+    if (error != null) {
+      throw error;
+    }
+    final year = int.parse(range.replaceAll("'", '').split('!').first);
+    sheets[year] = values;
+  }
+
+  @override
+  Future<void> appendValues(
+    String spreadsheetId,
+    String range,
+    List<List<Object?>> values,
+  ) async {
+    final error = writeError;
+    if (error != null) {
+      throw error;
+    }
+    final year = int.parse(range.replaceAll("'", '').split('!').first);
+    final rows = sheets.putIfAbsent(year, () => <List<Object?>>[]);
+    rows.addAll(values);
+  }
+
+  @override
+  Future<void> addSheet(String spreadsheetId, String title) async {
+    final error = writeError;
+    if (error != null) {
+      throw error;
+    }
+    sheets.putIfAbsent(int.parse(title), () => <List<Object?>>[]);
+  }
+}
+
+class _StubApiError {
+  const _StubApiError(this.status, this.message);
+
+  final int status;
+  final String message;
+
+  @override
+  String toString() => 'StubApiError $status: $message';
+}
+
+class _NotSignedInBackend implements SheetsSyncBackend {
+  @override
+  Future<String> resolveSpreadsheetId() async {
+    throw const SheetsNotSignedInException();
+  }
+
+  @override
+  Future<List<int>> listYearSheets(String spreadsheetId) async => <int>[];
+
+  @override
+  Future<void> ensureYearSheet(String spreadsheetId, int year) async {}
+
+  @override
+  Future<List<SheetRowData>> readYearSheet(
+    String spreadsheetId,
+    int year,
+  ) async =>
+      <SheetRowData>[];
+
+  @override
+  Future<void> appendRow(
+    String spreadsheetId,
+    int year,
+    SheetRowData row,
+  ) async {}
+
+  @override
+  Future<void> updateRow(
+    String spreadsheetId,
+    int year,
+    int rowIndex,
+    SheetRowData row,
+  ) async {}
+}
+
+class _AuthorizationMissingBackend implements SheetsSyncBackend {
+  @override
+  Future<String> resolveSpreadsheetId() async {
+    throw const SheetsAuthorizationMissingException();
+  }
+
+  @override
+  Future<List<int>> listYearSheets(String spreadsheetId) async => <int>[];
+
+  @override
+  Future<void> ensureYearSheet(String spreadsheetId, int year) async {}
+
+  @override
+  Future<List<SheetRowData>> readYearSheet(
+    String spreadsheetId,
+    int year,
+  ) async =>
+      <SheetRowData>[];
+
+  @override
+  Future<void> appendRow(
+    String spreadsheetId,
+    int year,
+    SheetRowData row,
+  ) async {}
+
+  @override
+  Future<void> updateRow(
+    String spreadsheetId,
+    int year,
+    int rowIndex,
+    SheetRowData row,
+  ) async {}
 }
 
 void main() {
@@ -172,20 +451,14 @@ void main() {
     });
   });
 
-  group('SheetsSyncEngine', () {
+  group('SheetsSyncEngine basics', () {
     test('create appends one row to the transaction-date year sheet', () async {
       final backend = FakeSheetsBackend();
-      final engine = SheetsSyncEngine();
-      final marked = <String>[];
+      final store = FakeStore([makeTx(date: DateTime(2025, 11, 2))]);
 
-      final result = await engine.syncAll(
-        pending: [makeTx(date: DateTime(2025, 11, 2))],
-        backend: backend,
-        onSynced: (tx) async => marked.add(tx.uuid),
-      );
+      await runEngine(SheetsSyncEngine(), backend, store);
 
-      expect(result.failedUuids, isEmpty);
-      expect(marked, ['uuid-1']);
+      expect(store.pending, isEmpty);
       expect(backend.sheets[2025], hasLength(1));
       expect(backend.sheets[2026], isNull);
       expect(backend.activeRows(2025).single.uuid, 'uuid-1');
@@ -193,19 +466,11 @@ void main() {
 
     test('retrying the same transaction updates instead of duplicating', () async {
       final backend = FakeSheetsBackend();
-      final engine = SheetsSyncEngine();
-      final marked = <String>[];
+      final store = FakeStore([makeTx(amount: 250)]);
 
-      Future<void> run(SyncTransaction tx) async {
-        await engine.syncAll(
-          pending: [tx],
-          backend: backend,
-          onSynced: (t) async => marked.add(t.uuid),
-        );
-      }
-
-      await run(makeTx(amount: 250));
-      await run(makeTx(amount: 300, updatedAt: DateTime(2026, 3, 11)));
+      await runEngine(SheetsSyncEngine(), backend, store);
+      store.edit(localId: 1, amount: 300);
+      await runEngine(SheetsSyncEngine(), backend, store);
 
       expect(backend.sheets[2026], hasLength(1));
       expect(backend.sheets[2026]!.single.amount, 300);
@@ -213,57 +478,38 @@ void main() {
 
     test('soft delete marks the row deleted and restore flips it back', () async {
       final backend = FakeSheetsBackend();
-      final engine = SheetsSyncEngine();
+      final store = FakeStore([makeTx()]);
 
-      Future<void> run(SyncTransaction tx) async {
-        await engine.syncAll(
-          pending: [tx],
-          backend: backend,
-          onSynced: (_) async {},
-        );
-      }
-
-      await run(makeTx());
-      await run(makeTx(deleted: true));
+      await runEngine(SheetsSyncEngine(), backend, store);
+      store.edit(localId: 1, deleted: true);
+      await runEngine(SheetsSyncEngine(), backend, store);
       expect(backend.sheets[2026], hasLength(1));
       expect(backend.sheets[2026]!.single.deleted, isTrue);
       expect(backend.activeRows(2026), isEmpty);
 
-      await run(makeTx(deleted: false));
+      store.edit(localId: 1, deleted: false);
+      await runEngine(SheetsSyncEngine(), backend, store);
       expect(backend.sheets[2026], hasLength(1));
       expect(backend.sheets[2026]!.single.deleted, isFalse);
     });
 
     test('deleting before first sync creates no row but still syncs locally', () async {
       final backend = FakeSheetsBackend();
-      final engine = SheetsSyncEngine();
-      final marked = <String>[];
+      final store = FakeStore([makeTx(deleted: true)]);
 
-      final result = await engine.syncAll(
-        pending: [makeTx(deleted: true)],
-        backend: backend,
-        onSynced: (tx) async => marked.add(tx.uuid),
-      );
+      await runEngine(SheetsSyncEngine(), backend, store);
 
-      expect(result.failedUuids, isEmpty);
-      expect(marked, ['uuid-1']);
+      expect(store.pending, isEmpty);
       expect(backend.sheets, isEmpty);
     });
 
     test('moving across years deletes the old row and writes the new year', () async {
       final backend = FakeSheetsBackend();
-      final engine = SheetsSyncEngine();
+      final store = FakeStore([makeTx(date: DateTime(2025, 12, 31))]);
 
-      Future<void> run(SyncTransaction tx) async {
-        await engine.syncAll(
-          pending: [tx],
-          backend: backend,
-          onSynced: (_) async {},
-        );
-      }
-
-      await run(makeTx(date: DateTime(2025, 12, 31)));
-      await run(makeTx(date: DateTime(2026, 1, 2)));
+      await runEngine(SheetsSyncEngine(), backend, store);
+      store.edit(localId: 1, transactionDate: DateTime(2026, 1, 2));
+      await runEngine(SheetsSyncEngine(), backend, store);
 
       expect(backend.sheets[2025], hasLength(1));
       expect(backend.sheets[2025]!.single.deleted, isTrue);
@@ -275,65 +521,370 @@ void main() {
 
     test('failed write retains pending status and retry succeeds', () async {
       final backend = FakeSheetsBackend()..failNextWrite = true;
-      final engine = SheetsSyncEngine();
-      final marked = <String>[];
+      final store = FakeStore([makeTx()]);
 
-      final failed = await engine.syncAll(
-        pending: [makeTx()],
-        backend: backend,
-        onSynced: (tx) async => marked.add(tx.uuid),
-      );
-
-      expect(failed.failedUuids, ['uuid-1']);
-      expect(marked, isEmpty);
+      await runEngine(SheetsSyncEngine(), backend, store);
+      expect(store.pending, hasLength(1));
       expect(backend.sheets[2026], isEmpty);
 
-      final retried = await engine.syncAll(
-        pending: [makeTx()],
-        backend: backend,
-        onSynced: (tx) async => marked.add(tx.uuid),
-      );
-
-      expect(retried.failedUuids, isEmpty);
-      expect(marked, ['uuid-1']);
+      await runEngine(SheetsSyncEngine(), backend, store);
+      expect(store.pending, isEmpty);
       expect(backend.sheets[2026], hasLength(1));
     });
 
     test('failed spreadsheet resolution syncs nothing', () async {
       final backend = FakeSheetsBackend()..failResolve = true;
-      final engine = SheetsSyncEngine();
+      final store = FakeStore([makeTx()]);
 
       await expectLater(
-        engine.syncAll(
-          pending: [makeTx()],
+        SheetsSyncEngine().syncAll(
+          pending: await store.getPending(),
           backend: backend,
-          onSynced: (_) async {},
+          onSynced: (tx) => store.markSynced(tx),
         ),
         throwsException,
       );
       expect(backend.sheets, isEmpty);
+      expect(store.pending, hasLength(1));
     });
+  });
 
-    test('one failing transaction does not block the others', () async {
+  group('Conditional acknowledgement after concurrent edits', () {
+    test('edit during a paused remote write keeps the newer revision pending, retry uploads it', () async {
       final backend = FakeSheetsBackend();
+      backend.writeGate = Completer<void>();
+      final store = FakeStore([makeTx(amount: 250)]);
       final engine = SheetsSyncEngine();
-      // Fail only the first write by making the second transaction
-      // use a backend that fails once: simulate via a wrapper.
-      var writes = 0;
-      final flaky = _FlakyBackend(backend, () {
-        writes++;
-        return writes == 1;
-      });
 
-      final result = await engine.syncAll(
-        pending: [makeTx(localId: 1, uuid: 'a'), makeTx(localId: 2, uuid: 'b')],
-        backend: flaky,
-        onSynced: (_) async {},
+      final run = engine.syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (tx) => store.markSynced(tx),
       );
 
-      expect(result.failedUuids, ['a']);
-      expect(result.syncedUuids, ['b']);
+      // Wait until the remote write has started, then edit locally.
+      await backend.writeStarted.future;
+      store.edit(localId: 1, amount: 999);
+      backend.writeGate!.complete();
+      final result = await run;
+
+      // The old snapshot was written, but its acknowledgement
+      // must fail because the local revision moved on.
+      expect(result.failedUuids, ['uuid-1']);
+      expect(store.pending, hasLength(1));
+      expect(store.entry(1)!.amount, 999);
       expect(backend.sheets[2026], hasLength(1));
+      expect(backend.sheets[2026]!.single.amount, 250);
+
+      // Retry uploads the latest revision in place, no duplicate.
+      backend.writeGate = null;
+      await runEngine(engine, backend, store);
+      expect(store.pending, isEmpty);
+      expect(backend.sheets[2026], hasLength(1));
+      expect(backend.sheets[2026]!.single.amount, 999);
+    });
+
+    test('delete during a paused remote write is not marked synced', () async {
+      final backend = FakeSheetsBackend();
+      backend.writeGate = Completer<void>();
+      final store = FakeStore([makeTx()]);
+      final engine = SheetsSyncEngine();
+
+      final run = engine.syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (tx) => store.markSynced(tx),
+      );
+
+      await backend.writeStarted.future;
+      store.edit(localId: 1, deleted: true);
+      backend.writeGate!.complete();
+      final result = await run;
+
+      expect(result.failedUuids, ['uuid-1']);
+      expect(store.pending, hasLength(1));
+      expect(store.entry(1)!.deleted, isTrue);
+
+      backend.writeGate = null;
+      await runEngine(engine, backend, store);
+      expect(store.pending, isEmpty);
+      expect(backend.sheets[2026], hasLength(1));
+      expect(backend.sheets[2026]!.single.deleted, isTrue);
+    });
+  });
+
+  group('Partial year-move failures', () {
+    test('tombstone failure: retry converges to one active row', () async {
+      final backend = FakeSheetsBackend();
+      final store = FakeStore([makeTx(date: DateTime(2025, 12, 31))]);
+      final engine = SheetsSyncEngine();
+
+      await runEngine(engine, backend, store);
+      store.edit(localId: 1, transactionDate: DateTime(2026, 1, 2));
+
+      backend.failNextUpdate = true;
+      await runEngine(engine, backend, store);
+      expect(store.pending, hasLength(1));
+      expect(backend.activeRows(2025), hasLength(1));
+      expect(backend.sheets[2026], isNull);
+
+      await runEngine(engine, backend, store);
+      expect(store.pending, isEmpty);
+      expect(backend.activeRows(2025), isEmpty);
+      expect(backend.activeRows(2026), hasLength(1));
+    });
+
+    test('tombstone succeeds but append fails: retry does not duplicate', () async {
+      final backend = FakeSheetsBackend();
+      final store = FakeStore([makeTx(date: DateTime(2025, 12, 31))]);
+      final engine = SheetsSyncEngine();
+
+      await runEngine(engine, backend, store);
+      store.edit(localId: 1, transactionDate: DateTime(2026, 1, 2));
+
+      backend.failNextAppend = true;
+      await runEngine(engine, backend, store);
+      expect(store.pending, hasLength(1));
+      expect(backend.sheets[2025]!.single.deleted, isTrue);
+      expect(backend.sheets[2026], isEmpty);
+
+      await runEngine(engine, backend, store);
+      expect(store.pending, isEmpty);
+      expect(backend.activeRows(2025), isEmpty);
+      expect(backend.activeRows(2026), hasLength(1));
+      expect(backend.sheets[2026], hasLength(1));
+    });
+
+    test('append succeeds but acknowledgement fails: retry updates in place', () async {
+      final backend = FakeSheetsBackend();
+      final store = FakeStore([makeTx()]);
+      final engine = SheetsSyncEngine();
+
+      store.failNextAck = true;
+      await runEngine(engine, backend, store);
+      expect(store.pending, hasLength(1));
+      expect(backend.sheets[2026], hasLength(1));
+
+      await runEngine(engine, backend, store);
+      expect(store.pending, isEmpty);
+      expect(backend.sheets[2026], hasLength(1));
+      expect(backend.appendCalls, 1);
+    });
+
+    test('repeated retries after year-move failures never create duplicate active rows', () async {
+      final backend = FakeSheetsBackend();
+      final store = FakeStore([makeTx(date: DateTime(2025, 12, 31))]);
+      final engine = SheetsSyncEngine();
+
+      await runEngine(engine, backend, store);
+      store.edit(localId: 1, transactionDate: DateTime(2026, 1, 2));
+
+      backend.failNextAppend = true;
+      await runEngine(engine, backend, store);
+      backend.failNextAppend = true;
+      await runEngine(engine, backend, store);
+      await runEngine(engine, backend, store);
+
+      expect(store.pending, isEmpty);
+      expect(backend.activeRows(2025), isEmpty);
+      expect(backend.activeRows(2026), hasLength(1));
+    });
+  });
+
+  group('Duplicate UUID detection', () {
+    test('duplicate rows in one worksheet are reported and nothing is written', () async {
+      final backend = FakeSheetsBackend();
+      final tx = makeTx();
+      backend.seedRow(2026, SheetRowData.fromTransaction(tx, rowIndex: 2));
+      backend.seedRow(2026, SheetRowData.fromTransaction(tx, rowIndex: 3));
+      final store = FakeStore([tx]);
+      final appendsBefore = backend.appendCalls;
+      final updatesBefore = backend.updateCalls;
+
+      final result = await SheetsSyncEngine().syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (t) => store.markSynced(t),
+      );
+
+      expect(result.duplicateUuids, ['uuid-1']);
+      expect(result.failedUuids, ['uuid-1']);
+      expect(backend.appendCalls, appendsBefore);
+      expect(backend.updateCalls, updatesBefore);
+      expect(backend.sheets[2026], hasLength(2));
+      expect(store.pending, hasLength(1));
+    });
+
+    test('two active rows across years are ambiguous and skipped', () async {
+      final backend = FakeSheetsBackend();
+      final tx = makeTx(date: DateTime(2026, 3, 10));
+      backend.seedRow(
+        2025,
+        SheetRowData.fromTransaction(
+          makeTx(date: DateTime(2025, 3, 10)),
+          rowIndex: 2,
+        ),
+      );
+      backend.seedRow(2026, SheetRowData.fromTransaction(tx, rowIndex: 2));
+      final store = FakeStore([tx]);
+
+      final result = await SheetsSyncEngine().syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (t) => store.markSynced(t),
+      );
+
+      expect(result.duplicateUuids, ['uuid-1']);
+      expect(store.pending, hasLength(1));
+      expect(backend.activeRows(2025), hasLength(1));
+      expect(backend.activeRows(2026), hasLength(1));
+    });
+
+    test('one active row plus one tombstoned row is not a duplicate', () async {
+      final backend = FakeSheetsBackend();
+      final tx = makeTx(date: DateTime(2026, 3, 10));
+      backend.seedRow(
+        2025,
+        SheetRowData.fromTransaction(tx).copyWith(
+          deleted: true,
+          rowIndex: 2,
+        ),
+      );
+      backend.seedRow(2026, SheetRowData.fromTransaction(tx, rowIndex: 2));
+      final store = FakeStore([tx]);
+
+      final result = await SheetsSyncEngine().syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (t) => store.markSynced(t),
+      );
+
+      expect(result.duplicateUuids, isEmpty);
+      expect(result.failedUuids, isEmpty);
+      expect(store.pending, isEmpty);
+    });
+  });
+
+  group('Sheets error classification', () {
+    test('missing worksheet after spreadsheet verification reads as empty', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2026] = <List<Object?>>[];
+      client.readError = const SheetsApiException(
+        SheetsErrorKind.missingWorksheet,
+        'Unable to parse range',
+        404,
+      );
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+
+      final rows = await backend.readYearSheet('spreadsheet-1', 2026);
+
+      expect(rows, isEmpty);
+      expect(client.titlesCalls, greaterThanOrEqualTo(1));
+    });
+
+    test('missing spreadsheet propagates and is never empty data', () async {
+      final client = FakeSheetsApiClient();
+      client.titlesError = const SheetsApiException(
+        SheetsErrorKind.missingSpreadsheet,
+        'Requested entity was not found',
+        404,
+      );
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+
+      await expectLater(
+        backend.readYearSheet('missing-id', 2026),
+        throwsA(
+          isA<SheetsApiException>().having(
+            (e) => e.kind,
+            'kind',
+            SheetsErrorKind.missingSpreadsheet,
+          ),
+        ),
+      );
+    });
+
+    test('permission and network failures propagate', () async {
+      final permissionClient = FakeSheetsApiClient();
+      permissionClient.titlesError = const SheetsApiException(
+        SheetsErrorKind.permissionDenied,
+        'The caller does not have permission',
+        403,
+      );
+      final permissionBackend =
+          GoogleSheetsBackend.forTesting(client: permissionClient);
+      await expectLater(
+        permissionBackend.readYearSheet('spreadsheet-1', 2026),
+        throwsA(
+          isA<SheetsApiException>().having(
+            (e) => e.kind,
+            'kind',
+            SheetsErrorKind.permissionDenied,
+          ),
+        ),
+      );
+
+      final networkClient = FakeSheetsApiClient();
+      networkClient.readError = const SheetsApiException(
+        SheetsErrorKind.network,
+        'SocketException: Failed host lookup',
+      );
+      final networkBackend =
+          GoogleSheetsBackend.forTesting(client: networkClient);
+      await expectLater(
+        networkBackend.readYearSheet('spreadsheet-1', 2026),
+        throwsA(
+          isA<SheetsApiException>().having(
+            (e) => e.kind,
+            'kind',
+            SheetsErrorKind.network,
+          ),
+        ),
+      );
+    });
+
+    test('classifySheetsError distinguishes status and network text', () {
+      expect(
+        classifySheetsError(
+          const _StubApiError(401, 'Unauthorized'),
+          kindFor404: SheetsErrorKind.missingSpreadsheet,
+        ),
+        SheetsErrorKind.authentication,
+      );
+      expect(
+        classifySheetsError(
+          const _StubApiError(403, 'Forbidden'),
+          kindFor404: SheetsErrorKind.missingSpreadsheet,
+        ),
+        SheetsErrorKind.permissionDenied,
+      );
+      expect(
+        classifySheetsError(
+          const _StubApiError(404, 'Not found'),
+          kindFor404: SheetsErrorKind.missingWorksheet,
+        ),
+        SheetsErrorKind.missingWorksheet,
+      );
+      expect(
+        classifySheetsError(
+          const _StubApiError(404, 'Not found'),
+          kindFor404: SheetsErrorKind.missingSpreadsheet,
+        ),
+        SheetsErrorKind.missingSpreadsheet,
+      );
+      expect(
+        classifySheetsError(
+          Exception('SocketException: Failed host lookup'),
+          kindFor404: SheetsErrorKind.missingSpreadsheet,
+        ),
+        SheetsErrorKind.network,
+      );
+      expect(
+        classifySheetsError(
+          Exception('Something unexpected'),
+          kindFor404: SheetsErrorKind.missingSpreadsheet,
+        ),
+        SheetsErrorKind.unknown,
+      );
     });
   });
 
@@ -345,7 +896,11 @@ void main() {
       final coordinator = SheetsSyncCoordinator(
         backend: backend,
         store: store,
-        onNotification: ({required type, required title, required message}) {
+        onNotification: ({
+          required type,
+          required title,
+          required message,
+        }) {
           notifications.add(type);
         },
       );
@@ -372,7 +927,11 @@ void main() {
       final coordinator = SheetsSyncCoordinator(
         backend: backend,
         store: store,
-        onNotification: ({required type, required title, required message}) {
+        onNotification: ({
+          required type,
+          required title,
+          required message,
+        }) {
           notifications.add(type);
         },
       );
@@ -383,13 +942,74 @@ void main() {
       coordinator.dispose();
     });
 
-    test('concurrent triggers join a single run', () async {
+    test('missing authorization stays pending, flags it, and does not retry on a timer', () async {
+      final backend = _AuthorizationMissingBackend();
+      final store = FakeStore([makeTx()]);
+      final notifications = <NotificationType>[];
+      final coordinator = SheetsSyncCoordinator(
+        backend: backend,
+        store: store,
+        onNotification: ({
+          required type,
+          required title,
+          required message,
+        }) {
+          notifications.add(type);
+        },
+      );
+
+      await coordinator.requestSync();
+      expect(store.pending, hasLength(1));
+      expect(coordinator.authorizationMissing, isTrue);
+      // One clear authorization-needed notification, not a
+      // generic retry loop.
+      expect(notifications, [NotificationType.syncFailed]);
+      coordinator.dispose();
+    });
+
+    test('trigger during a run is drained without another manual trigger', () async {
+      final backend = FakeSheetsBackend();
+      backend.writeGate = Completer<void>();
+      final store = FakeStore([makeTx(localId: 1, uuid: 'a')]);
+      final coordinator = SheetsSyncCoordinator(
+        backend: backend,
+        store: store,
+        onNotification: ({
+          required type,
+          required title,
+          required message,
+        }) {},
+      );
+
+      final firstRun = coordinator.requestSync();
+      await backend.writeStarted.future;
+
+      // New work arrives after the first batch was read but
+      // before it finishes; its trigger joins the running run.
+      store.add(makeTx(localId: 2, uuid: 'b'));
+      final joined = coordinator.requestSync();
+      backend.writeGate!.complete();
+
+      await firstRun;
+      await joined;
+
+      expect(store.pending, isEmpty);
+      expect(store.markedSynced, [1, 2]);
+      expect(backend.sheets[2026], hasLength(2));
+      coordinator.dispose();
+    });
+
+    test('concurrent triggers join a single run when no new work arrives', () async {
       final backend = FakeSheetsBackend();
       final store = FakeStore([makeTx()]);
       final coordinator = SheetsSyncCoordinator(
         backend: backend,
         store: store,
-        onNotification: ({required type, required title, required message}) {},
+        onNotification: ({
+          required type,
+          required title,
+          required message,
+        }) {},
       );
 
       await Future.wait([
@@ -402,78 +1022,48 @@ void main() {
       coordinator.dispose();
     });
   });
-}
 
-class _FlakyBackend implements SheetsSyncBackend {
-  _FlakyBackend(this.inner, this.shouldFail);
+  group('Authorization mode separation', () {
+    test('silent backend requests no interactive authorization', () async {
+      var requestedInteractive = false;
+      SheetsApiClient factory({required bool interactive}) {
+        requestedInteractive = interactive;
+        return FakeSheetsApiClient();
+      }
 
-  final FakeSheetsBackend inner;
-  final bool Function() shouldFail;
+      final backend = GoogleSheetsBackend.withClientFactory(
+        interactive: false,
+        clientFactory: factory,
+      );
 
-  @override
-  Future<String> resolveSpreadsheetId() => inner.resolveSpreadsheetId();
+      expect(backend.interactive, isFalse);
+      await backend.resolveSpreadsheetId();
+      expect(requestedInteractive, isFalse);
+    });
 
-  @override
-  Future<List<int>> listYearSheets(String spreadsheetId) =>
-      inner.listYearSheets(spreadsheetId);
+    test('interactive backend requests interactive authorization', () async {
+      var requestedInteractive = false;
+      SheetsApiClient factory({required bool interactive}) {
+        requestedInteractive = interactive;
+        return FakeSheetsApiClient();
+      }
 
-  @override
-  Future<void> ensureYearSheet(String spreadsheetId, int year) =>
-      inner.ensureYearSheet(spreadsheetId, year);
+      final backend = GoogleSheetsBackend.withClientFactory(
+        interactive: true,
+        clientFactory: factory,
+      );
 
-  @override
-  Future<List<SheetRowData>> readYearSheet(String spreadsheetId, int year) =>
-      inner.readYearSheet(spreadsheetId, year);
+      expect(backend.interactive, isTrue);
+      await backend.resolveSpreadsheetId();
+      expect(requestedInteractive, isTrue);
+    });
 
-  @override
-  Future<void> appendRow(String spreadsheetId, int year, SheetRowData row) async {
-    if (shouldFail()) {
-      throw Exception('Sheets write failed');
-    }
-    return inner.appendRow(spreadsheetId, year, row);
-  }
-
-  @override
-  Future<void> updateRow(
-    String spreadsheetId,
-    int year,
-    int rowIndex,
-    SheetRowData row,
-  ) =>
-      inner.updateRow(spreadsheetId, year, rowIndex, row);
-}
-
-class _NotSignedInBackend implements SheetsSyncBackend {
-  @override
-  Future<String> resolveSpreadsheetId() async {
-    throw const SheetsNotSignedInException();
-  }
-
-  @override
-  Future<List<int>> listYearSheets(String spreadsheetId) async => <int>[];
-
-  @override
-  Future<void> ensureYearSheet(String spreadsheetId, int year) async {}
-
-  @override
-  Future<List<SheetRowData>> readYearSheet(
-    String spreadsheetId,
-    int year,
-  ) async =>
-      <SheetRowData>[];
-
-  @override
-  Future<void> appendRow(
-    String spreadsheetId,
-    int year,
-    SheetRowData row,
-  ) async {}
-
-  @override
-  Future<void> updateRow(
-    String spreadsheetId,
-    int year,
-    int rowIndex,
-    SheetRowData row,
-  ) async {}
+    test('silent and interactive backend instances are distinct modes', () {
+      expect(GoogleSheetsBackend.instance.interactive, isFalse);
+      expect(
+        GoogleSheetsBackend.interactiveInstance.interactive,
+        isTrue,
+      );
+    });
+  });
 }

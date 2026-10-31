@@ -37,6 +37,21 @@ class SheetsNotSignedInException implements Exception {
   String toString() => 'SheetsNotSignedInException: $message';
 }
 
+/// Thrown when Sheets scopes have not been authorized yet and the
+/// caller is in silent/background mode, where prompting for
+/// authorization is forbidden. The user must authorize explicitly
+/// from Settings; pending work is retained.
+class SheetsAuthorizationMissingException implements Exception {
+  const SheetsAuthorizationMissingException([
+    this.message = 'Sheets authorization is missing.',
+  ]);
+
+  final String message;
+
+  @override
+  String toString() => 'SheetsAuthorizationMissingException: $message';
+}
+
 /// A local transaction, reduced to the fields Sheets needs.
 ///
 /// This is deliberately separate from the Drift `Transaction` row so
@@ -257,10 +272,18 @@ class SyncRunResult {
   const SyncRunResult({
     required this.syncedUuids,
     required this.failedUuids,
+    this.duplicateUuids = const <String>[],
   });
 
   final List<String> syncedUuids;
   final List<String> failedUuids;
+
+  /// UUIDs skipped because the spreadsheet already contains
+  /// ambiguous duplicate rows for them (see below). These need
+  /// manual cleanup in Sheets; the engine never deletes or merges
+  /// them automatically. They are also listed in [failedUuids]
+  /// and remain pending locally.
+  final List<String> duplicateUuids;
 }
 
 /// Idempotent, UUID-based synchronization of pending transactions.
@@ -273,14 +296,25 @@ class SyncRunResult {
 ///   Restoring flips it back to FALSE without a new row.
 /// - A transaction deleted before it was ever synced creates no row.
 /// - Moving a transaction across calendar years marks its old-year
-///   row(s) deleted and writes the row in the new year.
+///   row(s) deleted and writes the row in the new year. This is not
+///   atomic across worksheets: tombstoning, target write, and local
+///   acknowledgement are separate operations. A failure at any
+///   boundary leaves the transaction pending, and a retry re-reads
+///   the sheets and converges to exactly one active row (tombstone
+///   and target update are both idempotent; the local acknowledgement
+///   is conditional on the uploaded revision, see
+///   `markTransactionSyncedIfUnchanged`).
+/// - Duplicate UUID rows in a worksheet, or more than one active
+///   row for a UUID across worksheets, are ambiguous pre-existing
+///   data. The engine reports them, writes nothing for that
+///   transaction, and never deletes or merges rows automatically.
 /// - One failing transaction does not block the others, and a
 ///   failure never marks that transaction synced.
 class SheetsSyncEngine {
   Future<SyncRunResult> syncAll({
     required List<SyncTransaction> pending,
     required SheetsSyncBackend backend,
-    required Future<void> Function(SyncTransaction transaction) onSynced,
+    required Future<bool> Function(SyncTransaction transaction) onSynced,
   }) async {
     if (pending.isEmpty) {
       return const SyncRunResult(syncedUuids: [], failedUuids: []);
@@ -315,10 +349,38 @@ class SheetsSyncEngine {
       return null;
     }
 
+    bool hasDuplicateRows(String uuid) {
+      var activeCount = 0;
+      for (final year in years) {
+        var countInYear = 0;
+        for (final row in rowsByYear[year] ?? const <SheetRowData>[]) {
+          if (row.uuid == uuid) {
+            countInYear++;
+            if (!row.deleted) {
+              activeCount++;
+            }
+          }
+        }
+        if (countInYear > 1) {
+          return true;
+        }
+      }
+      return activeCount > 1;
+    }
+
     final synced = <String>[];
     final failed = <String>[];
+    final duplicates = <String>[];
 
     for (final transaction in pending) {
+      // Ambiguous pre-existing rows: report and skip. Never
+      // delete or merge them automatically.
+      if (hasDuplicateRows(transaction.uuid)) {
+        duplicates.add(transaction.uuid);
+        failed.add(transaction.uuid);
+        continue;
+      }
+
       try {
         final targetYear = transaction.year;
         final targetRow = findRow(targetYear, transaction.uuid);
@@ -397,14 +459,33 @@ class SheetsSyncEngine {
           }
         }
 
-        await onSynced(transaction);
-        synced.add(transaction.uuid);
+        // Conditional acknowledgement: only mark synced if the
+        // local row is still the revision that was uploaded. A
+        // concurrent edit makes this return false, so the newer
+        // revision stays pending and the next retry uploads it.
+        final acknowledged = await onSynced(transaction);
+        if (acknowledged) {
+          synced.add(transaction.uuid);
+        } else {
+          failed.add(transaction.uuid);
+        }
+      } on SheetsNotSignedInException {
+        // Auth state changed mid-run: stop the batch and let
+        // the coordinator handle it silently, rather than
+        // marking these rows as ordinary failures.
+        rethrow;
+      } on SheetsAuthorizationMissingException {
+        rethrow;
       } catch (_) {
         // Leave the transaction pending. The coordinator retries it.
         failed.add(transaction.uuid);
       }
     }
 
-    return SyncRunResult(syncedUuids: synced, failedUuids: failed);
+    return SyncRunResult(
+      syncedUuids: synced,
+      failedUuids: failed,
+      duplicateUuids: duplicates,
+    );
   }
 }

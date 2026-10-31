@@ -135,6 +135,26 @@ class TransactionRepository {
         .watch();
   }
 
+  /// Revision timestamp for the next local mutation of [previous].
+  ///
+  /// The revision used for conditional sync acknowledgement is the
+  /// millisecond-precision [Transaction.updatedAt] value as stored
+  /// by Drift (SQLite stores DateTime at millisecond precision).
+  /// Every local mutation — edit, delete, and restore — advances
+  /// this value strictly, by at least 1ms beyond the previous
+  /// stored value, so two distinct local writes can never share a
+  /// revision even if they happen inside the same millisecond.
+  /// A dedicated integer revision column would be stronger if
+  /// storage ever truncated below milliseconds; that requires
+  /// regenerating `app_database.g.dart` with build_runner (see
+  /// docs/sheets-sync.md) and is deliberately not hand-edited here.
+  DateTime _nextUpdatedAt(DateTime previous) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final previousMs = previous.millisecondsSinceEpoch;
+    final nextMs = nowMs > previousMs ? nowMs : previousMs + 1;
+    return DateTime.fromMillisecondsSinceEpoch(nextMs);
+  }
+
   Future<int> addTransaction(TransactionsCompanion transaction) {
     return _database.into(_database.transactions).insert(transaction);
   }
@@ -142,40 +162,57 @@ class TransactionRepository {
   Future<bool> updateTransaction(
     int id,
     TransactionsCompanion transaction,
-  ) {
+  ) async {
+    final existing = await getTransactionById(id);
+    if (existing == null) {
+      return false;
+    }
+
     final updatedTransaction = transaction.copyWith(
-      updatedAt: Value(DateTime.now()),
+      updatedAt: Value(_nextUpdatedAt(existing.updatedAt)),
       syncStatus: const Value('pending'),
     );
 
-    return (_database.update(_database.transactions)
+    final count = await (_database.update(_database.transactions)
           ..where((t) => t.id.equals(id)))
-        .write(updatedTransaction)
-        .then((count) => count > 0);
+        .write(updatedTransaction);
+    return count > 0;
   }
 
-  Future<bool> deleteTransaction(int id) {
-    return (_database.update(_database.transactions)
+  Future<bool> deleteTransaction(int id) async {
+    final existing = await getTransactionById(id);
+    if (existing == null) {
+      return false;
+    }
+
+    final count = await (_database.update(_database.transactions)
           ..where((t) => t.id.equals(id)))
         .write(
-          const TransactionsCompanion(
-            deleted: Value(true),
-            syncStatus: Value('pending'),
+          TransactionsCompanion(
+            deleted: const Value(true),
+            updatedAt: Value(_nextUpdatedAt(existing.updatedAt)),
+            syncStatus: const Value('pending'),
           ),
-        )
-        .then((count) => count > 0);
+        );
+    return count > 0;
   }
-  
-  Future<bool> restoreTransaction(int id) {
-    return (_database.update(_database.transactions)
+
+  Future<bool> restoreTransaction(int id) async {
+    final existing = await getTransactionById(id);
+    if (existing == null) {
+      return false;
+    }
+
+    final count = await (_database.update(_database.transactions)
           ..where((t) => t.id.equals(id)))
         .write(
-          const TransactionsCompanion(
-            deleted: Value(false),
-            syncStatus: Value('pending'),
+          TransactionsCompanion(
+            deleted: const Value(false),
+            updatedAt: Value(_nextUpdatedAt(existing.updatedAt)),
+            syncStatus: const Value('pending'),
           ),
-        )
-        .then((count) => count > 0);
+        );
+    return count > 0;
   }
 
   Future<Transaction?> getTransactionById(int id) {
@@ -199,12 +236,27 @@ class TransactionRepository {
         .get();
   }
 
-  /// Marks one row synced after its Sheets write succeeded. Only
-  /// `syncStatus` changes: `updatedAt` is left untouched so the
-  /// timestamp stored in Sheets keeps matching the last real edit.
-  Future<bool> markTransactionSynced(int id) {
+  /// Conditional acknowledgement: marks one row synced only if it
+  /// is still the exact revision that was uploaded — same
+  /// [updatedAt] revision, same [deleted] state, and still
+  /// `pending`. Returns `true` only when exactly that row was
+  /// updated. If a newer local edit, delete, or restore happened
+  /// while the remote write was running, this affects zero rows
+  /// and the newer revision correctly remains pending.
+  /// Only `syncStatus` changes: `updatedAt` is left untouched.
+  Future<bool> markTransactionSyncedIfUnchanged({
+    required int id,
+    required DateTime updatedAt,
+    required bool deleted,
+  }) {
     return (_database.update(_database.transactions)
-          ..where((t) => t.id.equals(id)))
+          ..where(
+            (t) =>
+                t.id.equals(id) &
+                t.updatedAt.equals(updatedAt) &
+                t.deleted.equals(deleted) &
+                t.syncStatus.equals('pending'),
+          ))
         .write(
           const TransactionsCompanion(
             syncStatus: Value('synced'),

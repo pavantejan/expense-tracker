@@ -5,63 +5,352 @@ import '../auth/google_auth_service.dart';
 import 'google_drive_service.dart';
 import 'sheets_sync.dart';
 
-/// Real [SheetsSyncBackend] backed by Google Drive + Sheets APIs.
+/// Classified Google Sheets / Drive API failures.
 ///
-/// Spreadsheet identity is resolved through Drive on every sync run
-/// (see docs/sheets-sync.md): [GoogleDriveService] finds or creates
-/// the one "Expense Tracker" folder and spreadsheet, so repeated
-/// setup never duplicates them and a restart re-finds the same file.
-/// Nothing here logs tokens, spreadsheet ids, or transaction data —
-/// only counts/years at debug level, with no row contents.
-class GoogleSheetsBackend implements SheetsSyncBackend {
-  GoogleSheetsBackend._();
+/// The engine and coordinator must never treat an arbitrary error
+/// as "no data". Classification is by HTTP status when available,
+/// with a network fallback on the error text. Unknown errors stay
+/// unknown and propagate so the transaction remains pending.
+enum SheetsErrorKind {
+  missingWorksheet,
+  missingSpreadsheet,
+  permissionDenied,
+  authentication,
+  network,
+  unknown,
+}
 
-  static final GoogleSheetsBackend instance = GoogleSheetsBackend._();
+class SheetsApiException implements Exception {
+  const SheetsApiException(this.kind, [this.message = '', this.status]);
 
-  static String _range(String yearTitle, String a1) => "'$yearTitle'!$a1";
+  final SheetsErrorKind kind;
+  final String message;
+  final int? status;
 
-  Future<sheets.SheetsApi> _sheetsApi() {
-    return GoogleAuthService.instance.getSheetsApi();
+  @override
+  String toString() => 'SheetsApiException($kind, $status): $message';
+}
+
+int? _statusOf(Object error) {
+  try {
+    final status = (error as dynamic).status;
+    return status is int ? status : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Classifies a raw API error. A 404 means different things in
+/// different contexts, so callers must say what a 404 means for
+/// their call via [kindFor404]: a missing worksheet/range for a
+/// values read after the spreadsheet was verified, or a missing
+/// spreadsheet for a spreadsheet-level call.
+SheetsErrorKind classifySheetsError(
+  Object error, {
+  required SheetsErrorKind kindFor404,
+}) {
+  final status = _statusOf(error);
+  if (status == 401) {
+    return SheetsErrorKind.authentication;
+  }
+  if (status == 403) {
+    return SheetsErrorKind.permissionDenied;
+  }
+  if (status == 404) {
+    return kindFor404;
+  }
+  final text = error.toString().toLowerCase();
+  if (text.contains('socketexception') ||
+      text.contains('failed host lookup') ||
+      text.contains('connection refused') ||
+      text.contains('network is unreachable') ||
+      text.contains('clientexception')) {
+    return SheetsErrorKind.network;
+  }
+  return SheetsErrorKind.unknown;
+}
+
+/// Injectable boundary around the Google Sheets + Drive APIs.
+///
+/// The sync engine and backend never talk to googleapis directly;
+/// they talk to this interface, so tests can inject a fake that
+/// throws classified errors without a Google account or real
+/// files. Implementations must throw [SheetsApiException] with a
+/// classified kind, never raw API errors, except for
+/// authentication/authorization exceptions from the auth layer,
+/// which propagate as [SheetsNotSignedInException] /
+/// [SheetsAuthorizationMissingException].
+abstract class SheetsApiClient {
+  /// Resolves (find-or-create) the one managed spreadsheet and
+  /// returns its id. Never creates duplicates on repeated calls
+  /// within the app-created set (see `GoogleDriveService`).
+  Future<String> resolveSpreadsheetId();
+
+  /// Titles of the worksheets in [spreadsheetId]. Throws
+  /// [SheetsApiException] with [SheetsErrorKind.missingSpreadsheet]
+  /// when the spreadsheet itself is missing or inaccessible.
+  Future<List<String>> sheetTitles(String spreadsheetId);
+
+  /// Raw values for [range] (A1 notation, including sheet title).
+  /// Throws [SheetsApiException] with
+  /// [SheetsErrorKind.missingWorksheet] when the worksheet/range
+  /// does not exist in an otherwise verified spreadsheet.
+  Future<List<List<Object?>>> readValues(
+    String spreadsheetId,
+    String range,
+  );
+
+  Future<void> updateValues(
+    String spreadsheetId,
+    String range,
+    List<List<Object?>> values, {
+    required bool userEntered,
+  });
+
+  Future<void> appendValues(
+    String spreadsheetId,
+    String range,
+    List<List<Object?>> values,
+  );
+
+  Future<void> addSheet(String spreadsheetId, String title);
+}
+
+typedef SheetsApiClientFactory = SheetsApiClient Function({
+  required bool interactive,
+});
+
+/// Real [SheetsApiClient] backed by the googleapis client.
+///
+/// [interactive] selects the authorization mode (see
+/// `GoogleAuthService`): silent background mode never prompts,
+/// interactive mode may prompt and is only used from an explicit
+/// Settings action.
+class GoogleApisSheetsClient implements SheetsApiClient {
+  GoogleApisSheetsClient({required this.interactive});
+
+  final bool interactive;
+  sheets.SheetsApi? _sheetsApi;
+
+  Future<sheets.SheetsApi> _api() async {
+    return _sheetsApi ??= await GoogleAuthService.instance.getSheetsApi(
+      allowInteractiveAuthorization: interactive,
+    );
+  }
+
+  SheetsApiException _wrap(Object error, SheetsErrorKind kindFor404) {
+    return SheetsApiException(
+      classifySheetsError(error, kindFor404: kindFor404),
+      error.toString(),
+      _statusOf(error),
+    );
   }
 
   @override
   Future<String> resolveSpreadsheetId() async {
-    final result = await GoogleDriveService.instance.setupExpenseTracker();
+    final result = await GoogleDriveService.instance.setupExpenseTracker(
+      allowInteractiveAuthorization: interactive,
+    );
     return result.fileId;
   }
 
   @override
-  Future<List<int>> listYearSheets(String spreadsheetId) async {
-    final api = await _sheetsApi();
-    final spreadsheet = await api.spreadsheets.get(
-      spreadsheetId,
-      $fields: 'sheets(properties(title))',
-    );
+  Future<List<String>> sheetTitles(String spreadsheetId) async {
+    try {
+      final api = await _api();
+      final spreadsheet = await api.spreadsheets.get(
+        spreadsheetId,
+        $fields: 'sheets(properties(title))',
+      );
+      final titles = <String>[];
+      for (final sheet in spreadsheet.sheets ?? const <sheets.Sheet>[]) {
+        final title = sheet.properties?.title;
+        if (title != null) {
+          titles.add(title);
+        }
+      }
+      return titles;
+    } catch (error) {
+      if (error is SheetsNotSignedInException ||
+          error is SheetsAuthorizationMissingException) {
+        rethrow;
+      }
+      throw _wrap(error, SheetsErrorKind.missingSpreadsheet);
+    }
+  }
 
+  @override
+  Future<List<List<Object?>>> readValues(
+    String spreadsheetId,
+    String range,
+  ) async {
+    try {
+      final api = await _api();
+      final response = await api.spreadsheets.values.get(
+        spreadsheetId,
+        range,
+      );
+      return response.values ?? const <List<Object?>>[];
+    } catch (error) {
+      if (error is SheetsNotSignedInException ||
+          error is SheetsAuthorizationMissingException) {
+        rethrow;
+      }
+      // The caller verifies the spreadsheet first, so a 404 here
+      // means the worksheet/range is missing.
+      throw _wrap(error, SheetsErrorKind.missingWorksheet);
+    }
+  }
+
+  @override
+  Future<void> updateValues(
+    String spreadsheetId,
+    String range,
+    List<List<Object?>> values, {
+    required bool userEntered,
+  }) async {
+    try {
+      final api = await _api();
+      await api.spreadsheets.values.update(
+        sheets.ValueRange(values: values),
+        spreadsheetId,
+        range,
+        valueInputOption: userEntered ? 'USER_ENTERED' : 'RAW',
+      );
+    } catch (error) {
+      if (error is SheetsNotSignedInException ||
+          error is SheetsAuthorizationMissingException) {
+        rethrow;
+      }
+      throw _wrap(error, SheetsErrorKind.missingSpreadsheet);
+    }
+  }
+
+  @override
+  Future<void> appendValues(
+    String spreadsheetId,
+    String range,
+    List<List<Object?>> values,
+  ) async {
+    try {
+      final api = await _api();
+      await api.spreadsheets.values.append(
+        sheets.ValueRange(values: values),
+        spreadsheetId,
+        range,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+      );
+    } catch (error) {
+      if (error is SheetsNotSignedInException ||
+          error is SheetsAuthorizationMissingException) {
+        rethrow;
+      }
+      throw _wrap(error, SheetsErrorKind.missingSpreadsheet);
+    }
+  }
+
+  @override
+  Future<void> addSheet(String spreadsheetId, String title) async {
+    try {
+      final api = await _api();
+      await api.spreadsheets.batchUpdate(
+        sheets.BatchUpdateSpreadsheetRequest(
+          requests: <sheets.Request>[
+            sheets.Request(
+              addSheet: sheets.AddSheetRequest(
+                properties: sheets.SheetProperties(title: title),
+              ),
+            ),
+          ],
+        ),
+        spreadsheetId,
+      );
+    } catch (error) {
+      if (error is SheetsNotSignedInException ||
+          error is SheetsAuthorizationMissingException) {
+        rethrow;
+      }
+      throw _wrap(error, SheetsErrorKind.missingSpreadsheet);
+    }
+  }
+}
+
+/// Real [SheetsSyncBackend] backed by Google Drive + Sheets APIs.
+///
+/// Spreadsheet identity is resolved through Drive on every sync
+/// run (see docs/sheets-sync.md): the Drive service finds or
+/// creates the one app-created "Expense Tracker" folder and
+/// spreadsheet, so repeated setup creates no duplicates within
+/// the app-created set and a restart re-finds the same file.
+/// Nothing here logs tokens, spreadsheet ids, or transaction
+/// data — only counts/years at debug level, with no row contents.
+///
+/// Two authorization modes exist: [instance] is silent/background
+/// (never prompts), [interactiveInstance] is for explicit
+/// Settings actions only.
+class GoogleSheetsBackend implements SheetsSyncBackend {
+  GoogleSheetsBackend._({
+    required this.interactive,
+    SheetsApiClientFactory? clientFactory,
+  }) : _clientFactory = clientFactory ?? _defaultFactory;
+
+  /// Test constructor: injects a fake client directly.
+  GoogleSheetsBackend.forTesting({
+    required SheetsApiClient client,
+    this.interactive = false,
+  })  : _clientFactory = (({
+          required bool interactive,
+        }) =>
+            client),
+        _client = client;
+
+  /// Test constructor: injects a client factory directly, so
+  /// tests can record the authorization mode a backend requests
+  /// without a Google account.
+  GoogleSheetsBackend.withClientFactory({
+    required this.interactive,
+    required SheetsApiClientFactory clientFactory,
+  }) : _clientFactory = clientFactory;
+
+  static final GoogleSheetsBackend instance =
+      GoogleSheetsBackend._(interactive: false);
+
+  static final GoogleSheetsBackend interactiveInstance =
+      GoogleSheetsBackend._(interactive: true);
+
+  static SheetsApiClient _defaultFactory({required bool interactive}) {
+    return GoogleApisSheetsClient(interactive: interactive);
+  }
+
+  final bool interactive;
+  final SheetsApiClientFactory _clientFactory;
+  SheetsApiClient? _client;
+
+  Future<SheetsApiClient> _client() async {
+    return _client ??= _clientFactory(interactive: interactive);
+  }
+
+  static String _range(String yearTitle, String a1) => "'$yearTitle'!$a1";
+
+  @override
+  Future<String> resolveSpreadsheetId() async {
+    final client = await _client();
+    return client.resolveSpreadsheetId();
+  }
+
+  @override
+  Future<List<int>> listYearSheets(String spreadsheetId) async {
+    final client = await _client();
+    final titles = await client.sheetTitles(spreadsheetId);
     final years = <int>[];
-    for (final sheet in spreadsheet.sheets ?? const <sheets.Sheet>[]) {
-      final year = int.tryParse(sheet.properties?.title ?? '');
+    for (final title in titles) {
+      final year = int.tryParse(title);
       if (year != null) {
         years.add(year);
       }
     }
     return years;
-  }
-
-  Future<List<List<Object?>>> _readValues(
-    sheets.SheetsApi api,
-    String spreadsheetId,
-    int year,
-  ) async {
-    final response = await api.spreadsheets.values.get(
-      spreadsheetId,
-      _range('$year', 'A:J'),
-    );
-    final values = response.values;
-    if (values == null) {
-      return const <List<Object?>>[];
-    }
-    return values;
   }
 
   bool _isHeaderRow(List<Object?> row) {
@@ -72,45 +361,35 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
   }
 
   Future<void> _writeHeader(
-    sheets.SheetsApi api,
+    SheetsApiClient client,
     String spreadsheetId,
     int year,
   ) async {
-    await api.spreadsheets.values.update(
-      sheets.ValueRange(values: <List<Object?>>[sheetHeaders]),
+    await client.updateValues(
       spreadsheetId,
       _range('$year', 'A1:J1'),
-      valueInputOption: 'RAW',
+      <List<Object?>>[sheetHeaders],
+      userEntered: false,
     );
   }
 
   @override
   Future<void> ensureYearSheet(String spreadsheetId, int year) async {
-    final api = await _sheetsApi();
+    final client = await _client();
 
-    final years = await listYearSheets(spreadsheetId);
-    if (!years.contains(year)) {
-      await api.spreadsheets.batchUpdate(
-        sheets.BatchUpdateSpreadsheetRequest(
-          requests: <sheets.Request>[
-            sheets.Request(
-              addSheet: sheets.AddSheetRequest(
-                properties: sheets.SheetProperties(title: '$year'),
-              ),
-            ),
-          ],
-        ),
-        spreadsheetId,
-      );
-      await _writeHeader(api, spreadsheetId, year);
+    final titles = await client.sheetTitles(spreadsheetId);
+    if (!titles.contains('$year')) {
+      await client.addSheet(spreadsheetId, '$year');
+      await _writeHeader(client, spreadsheetId, year);
       return;
     }
 
-    // Sheet exists: write the header only when it is empty, so
-    // existing rows are never touched.
-    final values = await _readValues(api, spreadsheetId, year);
-    if (values.isEmpty) {
-      await _writeHeader(api, spreadsheetId, year);
+    // Sheet exists: write the header only when there are no data
+    // rows, so existing rows are never touched. Writing the same
+    // header over a header-only sheet is idempotent.
+    final rows = await readYearSheet(spreadsheetId, year);
+    if (rows.isEmpty) {
+      await _writeHeader(client, spreadsheetId, year);
     }
   }
 
@@ -119,19 +398,26 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
     String spreadsheetId,
     int year,
   ) async {
-    final api = await _sheetsApi();
+    final client = await _client();
+
+    // Positive identification first: if the spreadsheet itself is
+    // missing, inaccessible, or unauthorized, sheetTitles throws
+    // a classified error and it must propagate — it is never
+    // silently converted into "empty worksheet".
+    await client.sheetTitles(spreadsheetId);
 
     late final List<List<Object?>> values;
     try {
-      values = await _readValues(api, spreadsheetId, year);
-    } catch (error) {
-      // A missing worksheet reads as empty; ensureYearSheet (called
-      // before every read in the engine) creates it. Other errors
-      // are surfaced by the caller, not hidden here, except for the
-      // not-found case Sheets reports for a sheet that does not
-      // exist yet.
-      if (error.toString().contains('Unable to parse range') ||
-          error.toString().contains('404')) {
+      values = await client.readValues(
+        spreadsheetId,
+        _range('$year', 'A:J'),
+      );
+    } on SheetsApiException catch (error) {
+      // Only a verified missing worksheet/range reads as empty.
+      // Permission, authentication, network, and missing-
+      // spreadsheet errors propagate so the transaction stays
+      // pending.
+      if (error.kind == SheetsErrorKind.missingWorksheet) {
         return const <SheetRowData>[];
       }
       rethrow;
@@ -143,7 +429,9 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
       if (i == 0 && _isHeaderRow(rowValues)) {
         continue;
       }
-      if (rowValues.every((value) => value == null || value.toString().isEmpty)) {
+      if (rowValues.every(
+        (value) => value == null || value.toString().isEmpty,
+      )) {
         continue;
       }
       rows.add(SheetRowData.fromValues(rowValues, i + 1));
@@ -158,13 +446,11 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
     int year,
     SheetRowData row,
   ) async {
-    final api = await _sheetsApi();
-    await api.spreadsheets.values.append(
-      sheets.ValueRange(values: <List<Object?>>[row.toValues()]),
+    final client = await _client();
+    await client.appendValues(
       spreadsheetId,
       _range('$year', 'A:J'),
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
+      <List<Object?>>[row.toValues()],
     );
   }
 
@@ -175,12 +461,12 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
     int rowIndex,
     SheetRowData row,
   ) async {
-    final api = await _sheetsApi();
-    await api.spreadsheets.values.update(
-      sheets.ValueRange(values: <List<Object?>>[row.toValues()]),
+    final client = await _client();
+    await client.updateValues(
       spreadsheetId,
       _range('$year', 'A$rowIndex:J$rowIndex'),
-      valueInputOption: 'USER_ENTERED',
+      <List<Object?>>[row.toValues()],
+      userEntered: true,
     );
   }
 }

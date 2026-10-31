@@ -56,24 +56,112 @@ be run by the reviewer / owner. Nothing in this PR claims otherwise.
 
 ## Proposed implementation (this PR only)
 
+## Corrections after technical review (second commit on PR #1)
+
+The notes below supersede the corresponding claims in the first
+version of this document. The first PR commit is not rewritten;
+corrections land as a follow-up commit on the same branch.
+
+- **Conditional acknowledgement (review §2).** The engine no
+  longer calls an unconditional mark-synced. The repository now
+  exposes `markTransactionSyncedIfUnchanged(id, updatedAt,
+  deleted)`, which updates only when the stored row still has
+  the uploaded revision, the same deleted state, and status
+  `pending`. Zero affected rows means the transaction stays
+  pending. Every local mutation — edit, delete, and restore —
+  now advances `updatedAt` monotonically (at least 1ms beyond
+  the previous stored value, at millisecond precision), so
+  `updatedAt` is a usable revision under Drift/SQLite
+  millisecond storage. A dedicated integer revision column
+  would be stronger if storage truncated below milliseconds;
+  it requires `build_runner` regeneration and is left as a
+  documented follow-up, not hand-edited generated code.
+  `updatedAt` is never changed by the acknowledgement itself.
+- **Coordinator trigger race (review §3).** `requestSync()` no
+  longer merely joins a running run. A trigger during a run
+  sets a rerun flag; the run drains by re-reading pending work
+  until a batch finishes with no new trigger, and a trigger in
+  the finishing window starts a follow-up run. One run at a
+  time is preserved; failed batches schedule the existing
+  bounded retry instead of looping immediately.
+- **Partial year moves + duplicates (review §4).** Tombstone,
+  target write, and acknowledgement are separate, non-atomic
+  operations. Retries re-read and converge: tombstoning and
+  target updates are idempotent, and acknowledgement is
+  conditional. Duplicate UUID rows in one worksheet, or more
+  than one active row for a UUID across worksheets, are
+  detected, reported in `SyncRunResult.duplicateUuids`, written
+  to nothing, and left pending. The engine never deletes or
+  merges ambiguous rows; manual cleanup in Sheets (keep one
+  row, delete the rest by hand) is required before a retry can
+  succeed for that UUID.
+- **Error classification (review §5).** The backend no longer
+  treats any error containing "404" as an empty worksheet.
+  Google APIs sit behind the injectable `SheetsApiClient`
+  boundary, which throws classified `SheetsApiException`s.
+  `readYearSheet` first verifies the spreadsheet via
+  `sheetTitles`; only a classified missing-worksheet error
+  after that verification reads as empty. Missing-spreadsheet,
+  permission, authentication, and network errors propagate
+  and leave work pending.
+- **Sign-in / authorization separation (review §6).**
+  `restoreSession()` uses the nullable
+  `Future<GoogleSignInAccount?>` from
+  `attemptLightweightAuthentication()`, falls back (bounded,
+  2s) to the retained `authenticationEvents` subscription,
+  and shares one restoration across concurrent callers.
+  Background sync uses silent authorization only
+  (`authorizationForScopes`, never `authorizeScopes`, never
+  `authenticate()`), and throws
+  `SheetsAuthorizationMissingException` when authorization is
+  absent. Interactive authorization happens only from the
+  explicit Settings "Authorize Google Sheets" action
+  (`authorizeForSync()`). Settings shows that action when its
+  silent `hasSyncAuthorization()` check finds authorization
+  missing; app startup never shows a picker or consent prompt.
+  The google_sign_in 7.2.0 calls could not be compile-verified
+  in this environment and must be verified with
+  `flutter analyze` by the reviewer.
+- **Drive discovery (review §7, supersedes the claim below).**
+  `drive.file` grants access only to app-created files (or
+  files opened with the app). A folder/spreadsheet the user
+  created manually in Drive, even with the same name, is NOT
+  guaranteed to be found, and the app will create its own
+  app-created folder with the same display name instead. The
+  implementation therefore claims only: within the
+  app-created set, find-or-create reuses the first match and
+  creates no duplicates; manual duplicates are never deleted
+  or merged. Scopes are NOT broadened. If picking an existing
+  user-created folder becomes required, the evaluated
+  follow-up is a Google Picker flow (user picks the folder,
+  granting access to that file) — not implemented here, and
+  it needs its own platform/setup work. Remembering the
+  app-created folder/spreadsheet ids persistently (Drift
+  SyncSettings table + `build_runner`) remains the preferred
+  long-term fix to avoid name discovery altogether.
+
 - **One spreadsheet, resolved via Drive (no Drift schema change).**
-  Reuse the existing, correct `GoogleDriveService.setupExpenseTracker()`:
+  Reuse the existing `GoogleDriveService.setupExpenseTracker()`:
   find-or-create folder "Expense Tracker", then find-or-create
-  spreadsheet "Expense Tracker" inside it. Drive itself is the
-  persistent store: the id is re-resolved on every sync run, cached
-  only in memory for that run, and re-resolved after a restart, so
-  no duplicate folder/spreadsheet is created by repeated setup.
-  This deliberately avoids a Drift schema change: adding a table
-  would require regenerating `app_database.g.dart` with
-  `build_runner`, which cannot run in this environment, and
-  hand-editing 2,351 lines of generated code is unsafe. Follow-up
-  (optional, owner/reviewer decision): add a Drift `SyncSettings`
-  table holding folder/spreadsheet ids and regenerate on a machine
+  spreadsheet "Expense Tracker" inside it — within the
+  app-created set only, per the Drive limitation above. Drive
+  itself is the persistent store: the id is re-resolved on
+  every sync run, cached only in memory for that run, and
+  re-resolved after a restart, so no duplicate folder/
+  spreadsheet is created by repeated setup *within the
+  app-created set*. This deliberately avoids a Drift schema
+  change: adding a table would require regenerating
+  `app_database.g.dart` with `build_runner`, which cannot run
+  in this environment, and hand-editing 2,351 lines of
+  generated code is unsafe. Follow-up (optional,
+  owner/reviewer decision): add a Drift `SyncSettings` table
+  holding folder/spreadsheet ids and regenerate on a machine
   with Flutter, to avoid the Drive list calls on every run.
-  Duplicate spreadsheets already in Drive are NOT deleted or merged:
-  the first match inside the folder wins, and the situation is
-  documented for manual reconciliation (pick the sheet with the
-  data, rename/delete the others by hand in Drive).
+  Duplicate spreadsheets already in Drive are NOT deleted or
+  merged: the first match inside the folder wins, and the
+  situation is documented for manual reconciliation (pick the
+  sheet with the data, rename/delete the others by hand in
+  Drive).
 - **Year worksheets.** One worksheet per calendar year, titled
   `"2026"`, `"2027"`, etc., chosen by `transactionDate.year`, never
   by the current date. Created on demand via `batchUpdate` +

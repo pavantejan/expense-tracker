@@ -20,6 +20,78 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isLoading = false;
   bool _isDriveSettingUp = false;
   bool _isSyncing = false;
+  bool _isAuthorizing = false;
+
+  /// `null` while unchecked (or signed out). `true` when signed
+  /// in but Sheets scopes are not yet authorized — the explicit
+  /// authorize action in this page is then the way forward.
+  bool? _authorizationMissing;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refreshAuthorizationStatus());
+  }
+
+  Future<void> _refreshAuthorizationStatus() async {
+    if (_userEmail == null) {
+      if (mounted) {
+        setState(() {
+          _authorizationMissing = null;
+        });
+      }
+      return;
+    }
+    final hasAuthorization =
+        await _googleAuthService.hasSyncAuthorization();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _authorizationMissing = !hasAuthorization;
+    });
+  }
+
+  /// Explicit user-initiated authorization. This is the only
+  /// place in the app that may show a consent prompt for Sheets
+  /// scopes. Background sync never calls this.
+  Future<void> _authorizeForSync() async {
+    setState(() {
+      _isAuthorizing = true;
+    });
+    try {
+      await _googleAuthService.authorizeForSync();
+      await _refreshAuthorizationStatus();
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Google Sheets backup authorized.',
+          ),
+        ),
+      );
+      unawaited(sheetsSyncCoordinator.syncNow());
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Authorization was not completed. Transactions stay saved locally.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAuthorizing = false;
+        });
+      }
+    }
+  }
 
   String? get _userEmail =>
       _googleAuthService.currentUser?.email;
@@ -42,6 +114,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
       setState(() {});
 
+      await _refreshAuthorizationStatus();
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -51,6 +125,9 @@ class _SettingsPageState extends State<SettingsPage> {
       );
 
       // Pending local changes can now sync in the background.
+      // This is silent: if Sheets authorization is missing, no
+      // consent prompt appears here — the authorize button in
+      // the Sync section below is the explicit action.
       unawaited(sheetsSyncCoordinator.requestSync());
     } catch (error) {
       if (!mounted) {
@@ -89,7 +166,9 @@ class _SettingsPageState extends State<SettingsPage> {
         return;
       }
 
-      setState(() {});
+      setState(() {
+        _authorizationMissing = null;
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -147,9 +226,10 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      final spreadsheetId =
-          await GoogleSheetsBackend.instance.resolveSpreadsheetId();
-      await GoogleSheetsBackend.instance.ensureYearSheet(
+      final spreadsheetId = await GoogleSheetsBackend
+          .interactiveInstance
+          .resolveSpreadsheetId();
+      await GoogleSheetsBackend.interactiveInstance.ensureYearSheet(
         spreadsheetId,
         DateTime.now().year,
       );
@@ -472,13 +552,24 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                   const SizedBox(height: 16),
+                  if (_authorizationMissing == true)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        'Google Sheets backup is not authorized yet. Authorize it here — background sync never asks for permission on its own.',
+                      ),
+                    ),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: email == null || _isSyncing
+                      onPressed: email == null ||
+                              _isSyncing ||
+                              _isAuthorizing
                           ? null
-                          : _retrySync,
-                      icon: _isSyncing
+                          : (_authorizationMissing == true
+                              ? _authorizeForSync
+                              : _retrySync),
+                      icon: _isSyncing || _isAuthorizing
                           ? const SizedBox(
                               width: 18,
                               height: 18,
@@ -490,7 +581,13 @@ class _SettingsPageState extends State<SettingsPage> {
                               Icons.sync_rounded,
                             ),
                       label: Text(
-                        _isSyncing ? 'Syncing...' : 'Retry sync now',
+                        _isAuthorizing
+                            ? 'Authorizing...'
+                            : _isSyncing
+                                ? 'Syncing...'
+                                : _authorizationMissing == true
+                                    ? 'Authorize Google Sheets'
+                                    : 'Retry sync now',
                       ),
                     ),
                   ),
