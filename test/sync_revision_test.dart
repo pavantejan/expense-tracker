@@ -56,19 +56,26 @@ void main() {
       expect((await rowOf(id)).syncRevision, 0);
     });
 
-    test('two updates within one second produce distinct increasing persisted revisions', () async {
-      final id = await transactions.addTransaction(_revisionTransaction());
-      await transactions.updateTransaction(id, editWith(101));
+    test('two updates with the same updatedAt timestamp produce distinct increasing persisted revisions', () async {
+      // Fixed clock: both mutations deterministically receive
+      // the exact same `updatedAt`. The integer revision, not
+      // the timestamp, is what distinguishes the two writes.
+      // This holds even though DateTime storage has only
+      // second precision: the stored timestamps are equal.
+      final fixedNow = DateTime(2026, 1, 1, 12, 0, 0);
+      final clocked = TransactionRepository(database, clock: () => fixedNow);
+      final id = await clocked.addTransaction(_revisionTransaction());
+      await clocked.updateTransaction(id, editWith(101));
       final afterFirst = await rowOf(id);
-      await transactions.updateTransaction(id, editWith(102));
+      await clocked.updateTransaction(id, editWith(102));
       final afterSecond = await rowOf(id);
 
+      expect(afterFirst.updatedAt, fixedNow);
+      expect(afterSecond.updatedAt, fixedNow);
+      expect(afterFirst.updatedAt, afterSecond.updatedAt);
       expect(afterFirst.syncRevision, 1);
       expect(afterSecond.syncRevision, 2);
       expect(afterSecond.amount, 102);
-      // updatedAt may legitimately be equal: DateTime storage
-      // has second precision. The revision, not the timestamp,
-      // distinguishes the two writes.
     });
 
     test(

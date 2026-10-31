@@ -9,11 +9,9 @@ part 'app_database.g.dart';
 
 @DriftDatabase(tables: [Transactions, CustomCategories, Notifications])
 class AppDatabase extends _$AppDatabase {
-  /// [executor] is test-only: production code uses the default
-  /// file-backed connection. Tests pass `NativeDatabase.memory()`
-  /// for an in-memory database. This changes no schema, table,
-  /// or migration: the schema version and migration strategy
-  /// below are untouched.
+  /// [executor] is test-only: tests pass `NativeDatabase.memory()`
+  /// for an in-memory database. Production code uses the default
+  /// file-backed connection.
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _openConnection());
 
   static QueryExecutor _openConnection() {

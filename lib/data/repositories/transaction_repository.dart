@@ -3,9 +3,17 @@ import 'package:drift/drift.dart';
 import '../database/app_database.dart';
 
 class TransactionRepository {
-  TransactionRepository(this._database);
+  /// [clock] is a test-only seam: tests pass a fixed clock so
+  /// two mutations can deterministically share one `updatedAt`
+  /// timestamp. Production code passes nothing and the current
+  /// wall-clock time is used. The clock affects only the
+  /// `updatedAt` timestamp metadata; the `syncRevision` token
+  /// advances by one per mutation regardless of the clock.
+  TransactionRepository(this._database, {DateTime Function()? clock})
+    : _clock = clock ?? DateTime.now;
 
   final AppDatabase _database;
+  final DateTime Function() _clock;
 
   Stream<List<Transaction>> watchAllTransactions() {
     return (_database.select(_database.transactions)
@@ -146,7 +154,7 @@ class TransactionRepository {
             _database.transactions,
           )..where((t) => t.id.equals(id))).write(
             write(existing).copyWith(
-              updatedAt: Value(DateTime.now()),
+              updatedAt: Value(_clock()),
               syncRevision: Value(existing.syncRevision + 1),
               syncStatus: const Value('pending'),
             ),
