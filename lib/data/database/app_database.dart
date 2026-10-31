@@ -21,7 +21,7 @@ class AppDatabase extends _$AppDatabase {
   }
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -54,6 +54,14 @@ class AppDatabase extends _$AppDatabase {
 
       if (from < 6) {
         await m.createTable(notifications);
+      }
+
+      if (from < 7) {
+        // Local-only conditional-acknowledgement token (see
+        // Transactions.syncRevision). Existing rows start at
+        // revision 0; their first subsequent local mutation
+        // advances it. No data is moved or rewritten.
+        await m.addColumn(transactions, transactions.syncRevision);
       }
     },
   );

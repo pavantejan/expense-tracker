@@ -134,6 +134,36 @@ void main() {
       expect(await categories.categoryNameExists('Yoga'), isFalse);
     });
 
+    test('competing duplicate additions store only one category', () async {
+      // Both calls start before either inserts. The check and
+      // the insert run in one database transaction, so exactly
+      // one call wins and the other is rejected.
+      Future<Object> attempt(String uuid, String name) async {
+        try {
+          return await categories.addCategory(
+            uuid: uuid,
+            name: name,
+            iconCodePoint: Icons.fitness_center_rounded.codePoint,
+          );
+        } on ArgumentError catch (error) {
+          return error;
+        }
+      }
+
+      final results = await Future.wait([
+        attempt('cat-race-1', 'Gym'),
+        attempt('cat-race-2', 'gym'),
+      ]);
+
+      final successes = results.whereType<int>().toList();
+      final failures = results.whereType<ArgumentError>().toList();
+      expect(successes, hasLength(1));
+      expect(failures, hasLength(1));
+      final stored = await categories.getAllCategories();
+      expect(stored, hasLength(1));
+      expect(stored.single.name, 'Gym');
+    });
+
     test('updating to another category name is rejected', () async {
       final firstId = await addCategoryNamed('Gym');
       await addCategoryNamed('Yoga');

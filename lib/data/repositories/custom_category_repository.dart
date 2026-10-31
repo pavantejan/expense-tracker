@@ -91,17 +91,22 @@ class CustomCategoryRepository {
     required String name,
     required int iconCodePoint,
   }) async {
-    await _ensureNameAvailable(name);
-    return _database
-        .into(_database.customCategories)
-        .insert(
-          CustomCategoriesCompanion.insert(
-            uuid: uuid,
-            name: name.trim(),
-            iconCodePoint: iconCodePoint,
-            createdAt: DateTime.now(),
-          ),
-        );
+    // Validation and insert run in one database transaction so
+    // concurrent calls cannot both pass the duplicate check and
+    // insert case-insensitive duplicates of the same name.
+    return _database.transaction(() async {
+      await _ensureNameAvailable(name);
+      return _database
+          .into(_database.customCategories)
+          .insert(
+            CustomCategoriesCompanion.insert(
+              uuid: uuid,
+              name: name.trim(),
+              iconCodePoint: iconCodePoint,
+              createdAt: DateTime.now(),
+            ),
+          );
+    });
   }
 
   /// Updates the category row with [id], safely.
@@ -136,15 +141,16 @@ class CustomCategoryRepository {
   ///   text equals the row's actual stored name are updated.
   /// - Returns `false` (and changes nothing) when [id] does
   ///   not exist.
-  /// - Each renamed transaction gets a strictly increasing
-  ///   revision timestamp and `syncStatus: 'pending'`,
-  ///   following the same revision rule as
-  ///   `TransactionRepository` local mutations, so the renamed
-  ///   rows re-sync through the existing Sheets sync. Deleted
-  ///   (soft-deleted) rows are included: their tombstones carry
-  ///   the category text, and the sync engine keys tombstones
-  ///   by UUID, so renaming them keeps tombstone revisions
-  ///   consistent.
+  /// - Each renamed transaction gets an incremented integer
+  ///   `syncRevision` and `syncStatus: 'pending'`, atomically
+  ///   with the rename, so the renamed rows re-sync through the
+  ///   existing Sheets sync and a stale acknowledgement for the
+  ///   pre-rename revision cannot mark them synced.
+  ///   `updatedAt` is refreshed as timestamp metadata only; it
+  ///   is not the concurrency token. Deleted (soft-deleted) rows
+  ///   are included: their tombstones carry the category text,
+  ///   and the sync engine keys tombstones by UUID, so renaming
+  ///   them keeps tombstone revisions consistent.
   /// - When only the icon changes ([name] equals the stored
   ///   name), no transaction row is touched.
   /// - Throws [ArgumentError] when [name] is empty, collides
@@ -185,7 +191,8 @@ class CustomCategoryRepository {
           )..where((t) => t.id.equals(row.id))).write(
             TransactionsCompanion(
               category: Value(trimmedName),
-              updatedAt: Value(_nextRevisionAfter(row.updatedAt)),
+              updatedAt: Value(DateTime.now()),
+              syncRevision: Value(row.syncRevision + 1),
               syncStatus: const Value('pending'),
             ),
           );
@@ -193,21 +200,6 @@ class CustomCategoryRepository {
       }
       return true;
     });
-  }
-
-  /// Revision timestamp for a renamed transaction row.
-  ///
-  /// Same rule as `TransactionRepository._nextUpdatedAt`:
-  /// strictly increasing, at least 1ms beyond the previous
-  /// stored value, so two distinct local writes never share a
-  /// revision even inside the same millisecond. Kept in sync
-  /// with that method by convention; both are covered by the
-  /// conditional-ack tests through the sync behaviour.
-  DateTime _nextRevisionAfter(DateTime previous) {
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final previousMs = previous.millisecondsSinceEpoch;
-    final nextMs = nowMs > previousMs ? nowMs : previousMs + 1;
-    return DateTime.fromMillisecondsSinceEpoch(nextMs);
   }
 
   Future<bool> deleteCategory(int id) async {

@@ -28,24 +28,34 @@
   categories plus all saved custom categories, showing each
   custom category's stored icon.
 - Renaming a custom category renames the matching local
-  transactions in the same database transaction, with updated
-  revision timestamps and `syncStatus: 'pending'`, so the
-  renamed rows re-sync through the existing Sheets sync. The
-  sync coordinator is triggered after a successful rename.
+  transactions in the same database transaction, incrementing
+  each row's integer `syncRevision` and setting
+  `syncStatus: 'pending'`, so the renamed rows re-sync through
+  the existing Sheets sync and a stale acknowledgement cannot
+  mark them synced. `updatedAt` is refreshed as timestamp
+  metadata only; it is not the concurrency token. The sync
+  coordinator is triggered after a successful rename.
   Deleting a custom category never touches transactions:
   historical rows keep their stored category text, and editing
   such a transaction shows its stored text as an extra selector
   item instead of silently replacing it.
 
-## No schema change
+## Schema change (blocking review)
 
-No database schema or migration was introduced (schema stays
-version 6). Category identity in transactions remains the stored
-name text; the rename path updates that text. The only
-constructor change is an optional test-only `QueryExecutor`
-parameter on `AppDatabase` (production code still uses the
-default file-backed connection); it enables in-memory database
-tests and changes no table or migration.
+Schema version 7 adds a local-only integer `syncRevision`
+column to the transactions table, via a v6→v7 migration that
+preserves all existing rows and initializes the revision to 0
+for them. Every local mutation of a transaction (edit, delete,
+restore, category rename) increments `syncRevision` by one.
+The revision is the conditional-acknowledgement token for
+Sheets sync; it is never written to Google Sheets.
+`updatedAt` is timestamp metadata only. Generated Drift code
+was regenerated with build_runner; no generated code was
+hand-edited. The only constructor change remains the optional
+test-only `QueryExecutor` parameter on `AppDatabase`
+(production code still uses the default file-backed
+connection); it enables in-memory database tests and changes
+no table or migration.
 
 ## Validation
 
@@ -74,6 +84,17 @@ duplicate of itself.
   icons and are selectable, and editing a transaction whose
   category text belongs to a deleted custom category preserves
   that text through loading, opening the selector, and saving.
+- `test/sync_revision_test.dart`: persisted integer revision
+  tests — new rows start at 0, same-second updates produce
+  distinct increasing revisions, stale acknowledgements fail
+  and leave the newer row pending, delete/rename and
+  delete/restore advance the revision, and renames advance
+  every matching active and soft-deleted row.
+- `test/migration_test.dart`: a raw-SQL version-6 database
+  (transaction + custom category, `user_version` 6) upgrades
+  to version 7 with data preserved and `syncRevision`
+  initialized to 0; the migrated row's first mutation
+  advances it to 1.
 
 Test-environment note: widget tests that mount a page backed by
 a live Drift database must close the database inside the test

@@ -56,6 +56,12 @@ class SheetsAuthorizationMissingException implements Exception {
 ///
 /// This is deliberately separate from the Drift `Transaction` row so
 /// the engine never depends on the database layer.
+///
+/// [syncRevision] is local-only acknowledgement metadata: the
+/// integer revision of the row when it was read. It is never
+/// written to Google Sheets and never appears in [SheetRowData].
+/// [updatedAt] remains the timestamp written to the sheet's
+/// UpdatedAt column; it is not the concurrency token.
 class SyncTransaction {
   const SyncTransaction({
     required this.localId,
@@ -68,6 +74,7 @@ class SyncTransaction {
     required this.paymentMethod,
     required this.notes,
     required this.updatedAt,
+    required this.syncRevision,
     required this.deleted,
   });
 
@@ -81,6 +88,9 @@ class SyncTransaction {
   final String paymentMethod;
   final String? notes;
   final DateTime updatedAt;
+
+  /// Local revision token captured when the row was read.
+  final int syncRevision;
   final bool deleted;
 
   int get year => transactionDate.year;

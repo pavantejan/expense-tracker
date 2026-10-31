@@ -126,6 +126,18 @@ class $TransactionsTable extends Transactions
     type: DriftSqlType.dateTime,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _syncRevisionMeta = const VerificationMeta(
+    'syncRevision',
+  );
+  @override
+  late final GeneratedColumn<int> syncRevision = GeneratedColumn<int>(
+    'sync_revision',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   static const VerificationMeta _syncStatusMeta = const VerificationMeta(
     'syncStatus',
   );
@@ -165,6 +177,7 @@ class $TransactionsTable extends Transactions
     notes,
     createdAt,
     updatedAt,
+    syncRevision,
     syncStatus,
     deleted,
   ];
@@ -268,6 +281,15 @@ class $TransactionsTable extends Transactions
     } else if (isInserting) {
       context.missing(_updatedAtMeta);
     }
+    if (data.containsKey('sync_revision')) {
+      context.handle(
+        _syncRevisionMeta,
+        syncRevision.isAcceptableOrUnknown(
+          data['sync_revision']!,
+          _syncRevisionMeta,
+        ),
+      );
+    }
     if (data.containsKey('sync_status')) {
       context.handle(
         _syncStatusMeta,
@@ -335,6 +357,10 @@ class $TransactionsTable extends Transactions
         DriftSqlType.dateTime,
         data['${effectivePrefix}updated_at'],
       )!,
+      syncRevision: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}sync_revision'],
+      )!,
       syncStatus: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}sync_status'],
@@ -364,6 +390,16 @@ class Transaction extends DataClass implements Insertable<Transaction> {
   final String? notes;
   final DateTime createdAt;
   final DateTime updatedAt;
+
+  /// Local-only conditional-acknowledgement token. Incremented by
+  /// one on every local mutation of the row (edit, delete,
+  /// restore, category rename). Never written to Google Sheets:
+  /// it exists only so a stale sync acknowledgement cannot mark
+  /// a newer local revision as synced. `updatedAt` is timestamp
+  /// metadata only and must not be used as the version token:
+  /// Drift stores DateTime values with second precision, so
+  /// same-second mutations can share an `updatedAt` value.
+  final int syncRevision;
   final String syncStatus;
   final bool deleted;
   const Transaction({
@@ -378,6 +414,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     this.notes,
     required this.createdAt,
     required this.updatedAt,
+    required this.syncRevision,
     required this.syncStatus,
     required this.deleted,
   });
@@ -399,6 +436,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     }
     map['created_at'] = Variable<DateTime>(createdAt);
     map['updated_at'] = Variable<DateTime>(updatedAt);
+    map['sync_revision'] = Variable<int>(syncRevision);
     map['sync_status'] = Variable<String>(syncStatus);
     map['deleted'] = Variable<bool>(deleted);
     return map;
@@ -421,6 +459,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
           : Value(notes),
       createdAt: Value(createdAt),
       updatedAt: Value(updatedAt),
+      syncRevision: Value(syncRevision),
       syncStatus: Value(syncStatus),
       deleted: Value(deleted),
     );
@@ -443,6 +482,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
       notes: serializer.fromJson<String?>(json['notes']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      syncRevision: serializer.fromJson<int>(json['syncRevision']),
       syncStatus: serializer.fromJson<String>(json['syncStatus']),
       deleted: serializer.fromJson<bool>(json['deleted']),
     );
@@ -462,6 +502,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
       'notes': serializer.toJson<String?>(notes),
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'syncRevision': serializer.toJson<int>(syncRevision),
       'syncStatus': serializer.toJson<String>(syncStatus),
       'deleted': serializer.toJson<bool>(deleted),
     };
@@ -479,6 +520,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     Value<String?> notes = const Value.absent(),
     DateTime? createdAt,
     DateTime? updatedAt,
+    int? syncRevision,
     String? syncStatus,
     bool? deleted,
   }) => Transaction(
@@ -493,6 +535,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     notes: notes.present ? notes.value : this.notes,
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
+    syncRevision: syncRevision ?? this.syncRevision,
     syncStatus: syncStatus ?? this.syncStatus,
     deleted: deleted ?? this.deleted,
   );
@@ -515,6 +558,9 @@ class Transaction extends DataClass implements Insertable<Transaction> {
       notes: data.notes.present ? data.notes.value : this.notes,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      syncRevision: data.syncRevision.present
+          ? data.syncRevision.value
+          : this.syncRevision,
       syncStatus: data.syncStatus.present
           ? data.syncStatus.value
           : this.syncStatus,
@@ -536,6 +582,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
           ..write('notes: $notes, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
+          ..write('syncRevision: $syncRevision, ')
           ..write('syncStatus: $syncStatus, ')
           ..write('deleted: $deleted')
           ..write(')'))
@@ -555,6 +602,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
     notes,
     createdAt,
     updatedAt,
+    syncRevision,
     syncStatus,
     deleted,
   );
@@ -573,6 +621,7 @@ class Transaction extends DataClass implements Insertable<Transaction> {
           other.notes == this.notes &&
           other.createdAt == this.createdAt &&
           other.updatedAt == this.updatedAt &&
+          other.syncRevision == this.syncRevision &&
           other.syncStatus == this.syncStatus &&
           other.deleted == this.deleted);
 }
@@ -589,6 +638,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
   final Value<String?> notes;
   final Value<DateTime> createdAt;
   final Value<DateTime> updatedAt;
+  final Value<int> syncRevision;
   final Value<String> syncStatus;
   final Value<bool> deleted;
   const TransactionsCompanion({
@@ -603,6 +653,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     this.notes = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
+    this.syncRevision = const Value.absent(),
     this.syncStatus = const Value.absent(),
     this.deleted = const Value.absent(),
   });
@@ -618,6 +669,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     this.notes = const Value.absent(),
     required DateTime createdAt,
     required DateTime updatedAt,
+    this.syncRevision = const Value.absent(),
     required String syncStatus,
     this.deleted = const Value.absent(),
   }) : uuid = Value(uuid),
@@ -641,6 +693,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     Expression<String>? notes,
     Expression<DateTime>? createdAt,
     Expression<DateTime>? updatedAt,
+    Expression<int>? syncRevision,
     Expression<String>? syncStatus,
     Expression<bool>? deleted,
   }) {
@@ -656,6 +709,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
       if (notes != null) 'notes': notes,
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
+      if (syncRevision != null) 'sync_revision': syncRevision,
       if (syncStatus != null) 'sync_status': syncStatus,
       if (deleted != null) 'deleted': deleted,
     });
@@ -673,6 +727,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     Value<String?>? notes,
     Value<DateTime>? createdAt,
     Value<DateTime>? updatedAt,
+    Value<int>? syncRevision,
     Value<String>? syncStatus,
     Value<bool>? deleted,
   }) {
@@ -688,6 +743,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
       notes: notes ?? this.notes,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      syncRevision: syncRevision ?? this.syncRevision,
       syncStatus: syncStatus ?? this.syncStatus,
       deleted: deleted ?? this.deleted,
     );
@@ -729,6 +785,9 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
     if (updatedAt.present) {
       map['updated_at'] = Variable<DateTime>(updatedAt.value);
     }
+    if (syncRevision.present) {
+      map['sync_revision'] = Variable<int>(syncRevision.value);
+    }
     if (syncStatus.present) {
       map['sync_status'] = Variable<String>(syncStatus.value);
     }
@@ -752,6 +811,7 @@ class TransactionsCompanion extends UpdateCompanion<Transaction> {
           ..write('notes: $notes, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
+          ..write('syncRevision: $syncRevision, ')
           ..write('syncStatus: $syncStatus, ')
           ..write('deleted: $deleted')
           ..write(')'))
@@ -1549,6 +1609,7 @@ typedef $$TransactionsTableCreateCompanionBuilder =
       Value<String?> notes,
       required DateTime createdAt,
       required DateTime updatedAt,
+      Value<int> syncRevision,
       required String syncStatus,
       Value<bool> deleted,
     });
@@ -1565,6 +1626,7 @@ typedef $$TransactionsTableUpdateCompanionBuilder =
       Value<String?> notes,
       Value<DateTime> createdAt,
       Value<DateTime> updatedAt,
+      Value<int> syncRevision,
       Value<String> syncStatus,
       Value<bool> deleted,
     });
@@ -1630,6 +1692,11 @@ class $$TransactionsTableFilterComposer
 
   ColumnFilters<DateTime> get updatedAt => $composableBuilder(
     column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get syncRevision => $composableBuilder(
+    column: $table.syncRevision,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1708,6 +1775,11 @@ class $$TransactionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get syncRevision => $composableBuilder(
+    column: $table.syncRevision,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get syncStatus => $composableBuilder(
     column: $table.syncStatus,
     builder: (column) => ColumnOrderings(column),
@@ -1767,6 +1839,11 @@ class $$TransactionsTableAnnotationComposer
   GeneratedColumn<DateTime> get updatedAt =>
       $composableBuilder(column: $table.updatedAt, builder: (column) => column);
 
+  GeneratedColumn<int> get syncRevision => $composableBuilder(
+    column: $table.syncRevision,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get syncStatus => $composableBuilder(
     column: $table.syncStatus,
     builder: (column) => column,
@@ -1818,6 +1895,7 @@ class $$TransactionsTableTableManager
                 Value<String?> notes = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<DateTime> updatedAt = const Value.absent(),
+                Value<int> syncRevision = const Value.absent(),
                 Value<String> syncStatus = const Value.absent(),
                 Value<bool> deleted = const Value.absent(),
               }) => TransactionsCompanion(
@@ -1832,6 +1910,7 @@ class $$TransactionsTableTableManager
                 notes: notes,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
+                syncRevision: syncRevision,
                 syncStatus: syncStatus,
                 deleted: deleted,
               ),
@@ -1848,6 +1927,7 @@ class $$TransactionsTableTableManager
                 Value<String?> notes = const Value.absent(),
                 required DateTime createdAt,
                 required DateTime updatedAt,
+                Value<int> syncRevision = const Value.absent(),
                 required String syncStatus,
                 Value<bool> deleted = const Value.absent(),
               }) => TransactionsCompanion.insert(
@@ -1862,6 +1942,7 @@ class $$TransactionsTableTableManager
                 notes: notes,
                 createdAt: createdAt,
                 updatedAt: updatedAt,
+                syncRevision: syncRevision,
                 syncStatus: syncStatus,
                 deleted: deleted,
               ),
