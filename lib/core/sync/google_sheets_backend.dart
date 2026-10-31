@@ -70,6 +70,23 @@ SheetsErrorKind classifySheetsError(
   return SheetsErrorKind.unknown;
 }
 
+/// How Sheets should interpret written values (Google Sheets
+/// `ValueInputOption`).
+///
+/// - [raw]: values are stored as-is, not parsed. Text beginning
+///   with `=` is stored as literal text, never evaluated as a
+///   formula. Numeric values passed as numbers stay numbers.
+/// - [userEntered]: values are parsed as if typed into the UI;
+///   strings may be converted to numbers or dates and text
+///   beginning with `=` is evaluated as a formula.
+///
+/// Transaction rows and headers are always written with [raw]
+/// (see `GoogleSheetsBackend`). [userEntered] exists only so a
+/// fake client can record which option the production client
+/// chose; production code must never write transaction values
+/// with it.
+enum SheetsValueInputOption { raw, userEntered }
+
 /// Injectable boundary around the Google Sheets + Drive APIs.
 ///
 /// The sync engine and backend never talk to googleapis directly;
@@ -104,14 +121,15 @@ abstract class SheetsApiClient {
     String spreadsheetId,
     String range,
     List<List<Object?>> values, {
-    required bool userEntered,
+    required SheetsValueInputOption valueInputOption,
   });
 
   Future<void> appendValues(
     String spreadsheetId,
     String range,
-    List<List<Object?>> values,
-  );
+    List<List<Object?>> values, {
+    required SheetsValueInputOption valueInputOption,
+  });
 
   Future<void> addSheet(String spreadsheetId, String title);
 }
@@ -123,9 +141,9 @@ typedef SheetsApiClientFactory = SheetsApiClient Function({
 /// Real [SheetsApiClient] backed by the googleapis client.
 ///
 /// [interactive] selects the authorization mode (see
-/// `GoogleAuthService`): silent background mode never prompts,
-/// interactive mode may prompt and is only used from an explicit
-/// Settings action.
+/// `GoogleAuthService`): in-memory-only background mode never
+/// initiates authentication or authorization, interactive mode
+/// may prompt and is only used from an explicit Settings action.
 class GoogleApisSheetsClient implements SheetsApiClient {
   GoogleApisSheetsClient({required this.interactive});
 
@@ -207,7 +225,7 @@ class GoogleApisSheetsClient implements SheetsApiClient {
     String spreadsheetId,
     String range,
     List<List<Object?>> values, {
-    required bool userEntered,
+    required SheetsValueInputOption valueInputOption,
   }) async {
     try {
       final api = await _api();
@@ -215,7 +233,12 @@ class GoogleApisSheetsClient implements SheetsApiClient {
         sheets.ValueRange(values: values),
         spreadsheetId,
         range,
-        valueInputOption: userEntered ? 'USER_ENTERED' : 'RAW',
+        // RAW: transaction text is stored literally, never
+        // parsed as a formula. Amounts are passed as numbers
+        // and stay numbers.
+        valueInputOption: valueInputOption == SheetsValueInputOption.raw
+            ? 'RAW'
+            : 'USER_ENTERED',
       );
     } catch (error) {
       if (error is SheetsNotSignedInException ||
@@ -230,15 +253,19 @@ class GoogleApisSheetsClient implements SheetsApiClient {
   Future<void> appendValues(
     String spreadsheetId,
     String range,
-    List<List<Object?>> values,
-  ) async {
+    List<List<Object?>> values, {
+    required SheetsValueInputOption valueInputOption,
+  }) async {
     try {
       final api = await _api();
       await api.spreadsheets.values.append(
         sheets.ValueRange(values: values),
         spreadsheetId,
         range,
-        valueInputOption: 'USER_ENTERED',
+        // RAW, for the same reason as updateValues above.
+        valueInputOption: valueInputOption == SheetsValueInputOption.raw
+            ? 'RAW'
+            : 'USER_ENTERED',
         insertDataOption: 'INSERT_ROWS',
       );
     } catch (error) {
@@ -286,8 +313,9 @@ class GoogleApisSheetsClient implements SheetsApiClient {
 /// Nothing here logs tokens, spreadsheet ids, or transaction
 /// data — only counts/years at debug level, with no row contents.
 ///
-/// Two authorization modes exist: [instance] is silent/background
-/// (never prompts), [interactiveInstance] is for explicit
+/// Two authorization modes exist: [instance] is in-memory-only
+/// background mode (never initiates authentication or
+/// authorization), [interactiveInstance] is for explicit
 /// Settings actions only.
 class GoogleSheetsBackend implements SheetsSyncBackend {
   GoogleSheetsBackend._({
@@ -360,6 +388,36 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
     return row[0].toString() == 'Date' && row[5].toString() == 'UUID';
   }
 
+  /// The legacy five-column header written by the previous
+  /// implementation: `Date, Type, Category, Description, Amount`
+  /// (A:E), with no UUID column. Cells beyond column E, when
+  /// present, must be empty for this to count as a legacy
+  /// header rather than a data row.
+  bool _isLegacyHeaderRow(List<Object?> row) {
+    if (row.length < 5) {
+      return false;
+    }
+    const legacy = <String>[
+      'Date',
+      'Type',
+      'Category',
+      'Description',
+      'Amount',
+    ];
+    for (var i = 0; i < 5; i++) {
+      if (row[i].toString() != legacy[i]) {
+        return false;
+      }
+    }
+    for (var i = 5; i < row.length; i++) {
+      final value = row[i];
+      if (value != null && value.toString().isNotEmpty) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Future<void> _writeHeader(
     SheetsApiClient client,
     String spreadsheetId,
@@ -369,7 +427,8 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
       spreadsheetId,
       _range('$year', 'A1:J1'),
       <List<Object?>>[sheetHeaders],
-      userEntered: false,
+      // Headers were already written with RAW; unchanged.
+      valueInputOption: SheetsValueInputOption.raw,
     );
   }
 
@@ -384,11 +443,27 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
       return;
     }
 
-    // Sheet exists: write the header only when there are no data
-    // rows, so existing rows are never touched. Writing the same
-    // header over a header-only sheet is idempotent.
-    final rows = await readYearSheet(spreadsheetId, year);
-    if (rows.isEmpty) {
+    // Sheet exists: inspect only the header row. A legacy
+    // A:E header is extended to A:J in place; data rows are
+    // never touched and no UUID is invented for them. A
+    // current A:J header needs nothing. An empty first row
+    // means an empty sheet, so writing the header is safe. A
+    // data row in row 1 with no recognised header is left
+    // alone — overwriting it with a header would destroy
+    // data.
+    final headerValues = await client.readValues(
+      spreadsheetId,
+      _range('$year', 'A1:J1'),
+    );
+    final firstRow =
+        headerValues.isEmpty ? const <Object?>[] : headerValues.first;
+    if (_isHeaderRow(firstRow)) {
+      return;
+    }
+    if (_isLegacyHeaderRow(firstRow) ||
+        firstRow.every(
+          (value) => value == null || value.toString().isEmpty,
+        )) {
       await _writeHeader(client, spreadsheetId, year);
     }
   }
@@ -426,7 +501,11 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
     final rows = <SheetRowData>[];
     for (var i = 0; i < values.length; i++) {
       final rowValues = values[i];
-      if (i == 0 && _isHeaderRow(rowValues)) {
+      if (i == 0 &&
+          (_isHeaderRow(rowValues) || _isLegacyHeaderRow(rowValues))) {
+        // Current A:J header or legacy A:E header: skipped.
+        // Legacy data rows below it keep their (empty) UUID
+        // and are never matched or modified by the engine.
         continue;
       }
       if (rowValues.every(
@@ -451,6 +530,7 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
       spreadsheetId,
       _range('$year', 'A:J'),
       <List<Object?>>[row.toValues()],
+      valueInputOption: SheetsValueInputOption.raw,
     );
   }
 
@@ -466,7 +546,8 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
       spreadsheetId,
       _range('$year', 'A$rowIndex:J$rowIndex'),
       <List<Object?>>[row.toValues()],
-      userEntered: true,
+      // RAW: descriptions/notes beginning with `=` stay literal.
+      valueInputOption: SheetsValueInputOption.raw,
     );
   }
 }

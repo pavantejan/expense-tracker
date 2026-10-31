@@ -130,9 +130,9 @@ class SheetsSyncCoordinator {
   Timer? _retryTimer;
 
   /// True when the last sync attempt found that Sheets scopes have
-  /// not been authorized. Settings reads this (via its own silent
-  /// check) to show the authorize action. Cleared on a successful
-  /// sync or when authorization is granted.
+  /// not been authorized. Settings reads this (via its own
+  /// in-memory-only check) to show the authorize action. Cleared
+  /// on a successful sync or when authorization is granted.
   bool authorizationMissing = false;
 
   /// Fire-and-forget trigger used after local saves and sign-in.

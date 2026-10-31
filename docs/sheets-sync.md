@@ -56,6 +56,126 @@ be run by the reviewer / owner. Nothing in this PR claims otherwise.
 
 ## Proposed implementation (this PR only)
 
+## Corrections after second technical review (third commit on PR #1)
+
+The notes below supersede the corresponding claims in the
+earlier sections. The earlier commits are not rewritten;
+corrections land as a follow-up commit on the same branch.
+
+- **Background authentication must not show UI (review §1,
+  supersedes the "silent authorization" / restore claims in
+  the second-commit notes and the Auth bullet below).**
+  The google_sign_in 7.x migration guide states
+  `attemptLightweightAuthentication()` "is no longer
+  guaranteed to be silent. For example, as of the publishing
+  of 7.0, on web this may show a floating sign-in card, and on
+  Android it may show an account selection sheet", and it is
+  "no longer guaranteed to return a future" — on some
+  platforms the result arrives only through the
+  `authenticationEvents` stream. Background sync therefore
+  never calls `attemptLightweightAuthentication()`,
+  `authenticate()`, or `authorizeScopes()`, and never calls
+  `initialize()` either: it reads only the in-memory
+  signed-in account set during this app session, inspects
+  existing authorization with `authorizationForScopes`
+  only, and throws `SheetsNotSignedInException` /
+  `SheetsAuthorizationMissingException` when there is no
+  in-memory account or no existing authorization. Pending
+  work stays pending. `restoreSession()` is now Settings-only
+  (called from the Settings sign-in button tap and from the
+  interactive authorization path), handles the nullable
+  returned `Future` (no `Future` → wait bounded 2s for the
+  stream), and the `authenticationEvents` subscription is
+  still retained for the app lifetime to observe session
+  changes in the active session. Settings offers a clear
+  reconnect action after a restart: the "Sign in with Google"
+  button (with explainer text that background sync never
+  signs the user in on its own) first tries an explicit
+  restore, then interactive sign-in. `hasSyncAuthorization()`
+  no longer restores: it inspects only the in-memory session
+  and returns `false` after a restart until the user
+  reconnects. No comment or document in this PR claims
+  lightweight authentication is guaranteed silent.
+- **Worksheet discovery errors abort the run (review §2).**
+  The best-effort catch around `listYearSheets` is removed.
+  If listing fails, the engine throws before any remote
+  write or local acknowledgement; the coordinator treats it
+  as an ordinary failure and retries with its bounded
+  backoff. A partial worksheet list could miss a year-moved
+  row and leave two active rows for one UUID, so there is
+  no fallback to pending years alone.
+- **Deletion before first synchronization (review §3).**
+  The engine reads existing worksheets first and only
+  ensures (creates) a year worksheet when a write to it is
+  about to happen. A pending deletion with no prior row
+  anywhere is acknowledged locally with no worksheet and no
+  remote row. A previously synchronized deletion still
+  tombstones every existing row. The fake backend's
+  `ensureYearSheet` now records calls and creates the year
+  when called, so tests prove no worksheet was created.
+- **RAW for transaction values (review §4).** Append and
+  update now use `RAW` (previously `USER_ENTERED` for both).
+  Text beginning with `=` is stored literally, never
+  evaluated as a formula; amounts are passed as JSON
+  numbers and stay numbers. Header writing already used
+  `RAW` and is unchanged. The `SheetsApiClient` boundary
+  now carries a typed `SheetsValueInputOption` so tests can
+  record the option the production client chose.
+- **Legacy five-column headers (review §5).** A worksheet
+  whose first row is exactly
+  `Date, Type, Category, Description, Amount` (A:E, with no
+  non-empty cells beyond column E) is recognised as a legacy
+  header. `ensureYearSheet` extends only that header row to
+  the current A:J schema; every data row is preserved
+  byte-for-byte and no UUID is invented for legacy rows.
+  `readYearSheet` skips the legacy header; legacy rows
+  parse with an empty UUID and are never matched, updated,
+  or tombstoned by the engine (their UUID never equals a
+  local transaction's UUID), so they are untouched by sync.
+  Manual reconciliation: legacy rows are historical records
+  with no UUID. Leave them untouched, or reconcile by hand
+  in Sheets by date/amount/description (for example, delete
+  a legacy row by hand if the same transaction was later
+  synced as a UUID row and now appears twice). The app does
+  not expose local transaction UUIDs in its UI, so typing a
+  UUID into column F by hand is not a supported path, and
+  no UUID must be invented for a legacy row. Do not delete
+  or merge legacy rows from the app.
+- **Authentication validation (review §6) — assessment.**
+  `GoogleAuthService` cannot be unit-tested against the real
+  plugin without the platform: `GoogleSignIn` is a singleton
+  (`GoogleSignIn.instance`, no injectable constructor in
+  7.x), its account/event types are produced only by the
+  plugin/platform, and no mocking dependency is in
+  `pubspec.yaml`. Mocking the platform interface would
+  require adding `google_sign_in_platform_interface` (and a
+  mocking library) to dev dependencies and implementing the
+  full platform interface, and it still could not prove
+  that a native call shows no UI — platform UI behaviour is
+  documented in the migration guide, not observable from a
+  fake. That was NOT done here: adding unverifiable
+  dependencies and a large mock surface in an environment
+  where `flutter analyze`/`flutter test` cannot run would
+  risk breaking the real path for no verified gain. What is
+  tested instead: (a) the `SheetsApiClient` factory routing
+  — which authorization mode the backend requests — with
+  the explicit caveat that it proves routing only, not
+  plugin behaviour; (b) engine/coordinator behaviour when
+  the backend throws `SheetsNotSignedInException` /
+  `SheetsAuthorizationMissingException` (silent, pending,
+  no acknowledgement); (c) the manual Android checklist in
+  the PR description, which is the only verification of the
+  actual no-UI-in-background behaviour, including
+  kill-and-relaunch with pending work. If the reviewer
+  wants platform-interface mocking, that is a separate
+  approved task with its own dependency and compile
+  verification on a Flutter machine. Sign-out leaves
+  pending records intact because sign-out touches only the
+  in-memory account; the local database and `syncStatus`
+  are never modified by sign-out (covered by the
+  not-signed-in coordinator/engine tests, which assert
+  pending work survives a missing session).
+
 ## Corrections after technical review (second commit on PR #1)
 
 The notes below supersede the corresponding claims in the first
@@ -172,6 +292,9 @@ corrections land as a follow-up commit on the same branch.
   Notes, UpdatedAt, Deleted` (A:J). The first five columns keep the
   old order so any 5-column sheet created by the old code remains
   readable; UUID and the remaining fields are appended as F:J.
+  Legacy A:E headers are recognised and extended in place by
+  `ensureYearSheet` (see the third-commit corrections above);
+  legacy data rows keep an empty UUID and are never modified.
   Date is `YYYY-MM-DD`; UpdatedAt is ISO-8601; Deleted is
   `TRUE`/`FALSE`; Amount is a number.
 - **UUID idempotency.** The existing stable transaction `uuid` is
@@ -199,7 +322,8 @@ corrections land as a follow-up commit on the same branch.
   triggered fire-and-forget after local create/edit/delete/restore,
   after sign-in, from a Settings "Retry sync" action, and
   best-effort on app start. It never blocks local saving.
-- **Auth.** `GoogleAuthService` now subscribes to
+- **Auth (superseded by the third-commit corrections
+  above — background sync never restores).** `GoogleAuthService` now subscribes to
   `authenticationEvents` (pub.dev google_sign_in example pattern)
   and `restoreSession()` calls `attemptLightweightAuthentication()`
   after `initialize()`, so a previous session can be restored

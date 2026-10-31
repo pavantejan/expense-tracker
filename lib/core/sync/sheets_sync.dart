@@ -244,10 +244,14 @@ abstract class SheetsSyncBackend {
   Future<String> resolveSpreadsheetId();
 
   /// Years that already have a worksheet in the spreadsheet.
+  /// Must throw on failure: the engine aborts the whole run
+  /// rather than syncing against a partial worksheet list.
   Future<List<int>> listYearSheets(String spreadsheetId);
 
-  /// Creates the worksheet for [year] and writes the header row when
-  /// the sheet is new or empty. Does nothing to existing data.
+  /// Creates the worksheet for [year] and writes the header row
+  /// when the sheet is new or empty, or extends a legacy A:E
+  /// header to A:J when one is present. Does nothing to existing
+  /// data rows and invents no UUIDs for them.
   Future<void> ensureYearSheet(String spreadsheetId, int year);
 
   /// Data rows (header excluded) for [year], in sheet order.
@@ -294,7 +298,18 @@ class SyncRunResult {
 ///   the target year worksheet is updated in place.
 /// - A soft-deleted transaction keeps its row with Deleted=TRUE.
 ///   Restoring flips it back to FALSE without a new row.
-/// - A transaction deleted before it was ever synced creates no row.
+/// - A transaction deleted before it was ever synced creates no
+///   row and no worksheet: if no row for its UUID exists in any
+///   existing worksheet, the pending deletion is acknowledged
+///   locally without any remote write. Existing worksheets are
+///   read first; a worksheet is only created when a write to it
+///   is actually needed.
+/// - Worksheet discovery is not best-effort: if listing the
+///   existing year worksheets fails, the whole run aborts before
+///   any remote write or local acknowledgement, and the
+///   coordinator handles the retry. A partial worksheet list
+///   could otherwise miss a row that moved years and leave two
+///   active rows for one UUID.
 /// - Moving a transaction across calendar years marks its old-year
 ///   row(s) deleted and writes the row in the new year. This is not
 ///   atomic across worksheets: tombstoning, target write, and local
@@ -322,21 +337,33 @@ class SheetsSyncEngine {
 
     final spreadsheetId = await backend.resolveSpreadsheetId();
 
-    // Years to inspect: every pending transaction's year, plus every
-    // year worksheet that already exists (needed to find rows that
-    // moved years or were deleted in a different year).
-    final years = <int>{for (final tx in pending) tx.year};
-    try {
-      years.addAll(await backend.listYearSheets(spreadsheetId));
-    } catch (_) {
-      // Listing is best-effort: pending years alone are enough to
-      // sync new/edited rows. Year moves from an unlisted year are
-      // handled on the next run once listing succeeds.
+    // Worksheet discovery is all-or-nothing. If listing fails,
+    // this throws before any remote write or acknowledgement,
+    // so the coordinator can retry the whole run. Never fall
+    // back to the pending transactions' years alone: a year
+    // move from an unlisted year would then be missed.
+    final existingYears = await backend.listYearSheets(spreadsheetId);
+
+    // Read the worksheets that already exist. Do NOT ensure
+    // anything yet: ensuring a year creates it, and a
+    // transaction deleted before its first sync must not
+    // create a worksheet or a row.
+    final rowsByYear = <int, List<SheetRowData>>{};
+    for (final year in existingYears) {
+      rowsByYear[year] = await backend.readYearSheet(spreadsheetId, year);
     }
 
-    final rowsByYear = <int, List<SheetRowData>>{};
-    for (final year in years) {
+    // A year is ensured (created if missing, header extended if
+    // legacy — see the backend) only when a write to it is about
+    // to happen. After ensuring, the year is re-read so the
+    // engine works from the sheet's actual contents.
+    final ensuredYears = <int>{};
+    Future<void> prepareYear(int year) async {
+      if (ensuredYears.contains(year)) {
+        return;
+      }
       await backend.ensureYearSheet(spreadsheetId, year);
+      ensuredYears.add(year);
       rowsByYear[year] = await backend.readYearSheet(spreadsheetId, year);
     }
 
@@ -349,9 +376,23 @@ class SheetsSyncEngine {
       return null;
     }
 
+    /// Years that currently have a row for [uuid] in the
+    /// snapshot read above. Computed from the snapshot, not
+    /// from [rowsByYear] after writes, so the duplicate check
+    /// below sees the pre-run state.
+    List<int> yearsWithRow(String uuid) {
+      final years = <int>[];
+      for (final year in existingYears) {
+        if (findRow(year, uuid) != null) {
+          years.add(year);
+        }
+      }
+      return years;
+    }
+
     bool hasDuplicateRows(String uuid) {
       var activeCount = 0;
-      for (final year in years) {
+      for (final year in existingYears) {
         var countInYear = 0;
         for (final row in rowsByYear[year] ?? const <SheetRowData>[]) {
           if (row.uuid == uuid) {
@@ -383,9 +424,10 @@ class SheetsSyncEngine {
 
       try {
         final targetYear = transaction.year;
+        final rowYears = yearsWithRow(transaction.uuid);
         final targetRow = findRow(targetYear, transaction.uuid);
         final otherRows = <MapEntry<int, SheetRowData>>[];
-        for (final year in years) {
+        for (final year in rowYears) {
           if (year == targetYear) {
             continue;
           }
@@ -396,25 +438,32 @@ class SheetsSyncEngine {
         }
 
         if (transaction.deleted) {
-          // Keep every existing row, marked deleted. No row is
-          // created for a transaction deleted before first sync.
-          if (targetRow != null && targetRow.rowIndex != null) {
-            final deletedRow = SheetRowData.fromTransaction(
-              transaction,
-              rowIndex: targetRow.rowIndex,
-            );
-            await backend.updateRow(
-              spreadsheetId,
-              targetYear,
-              targetRow.rowIndex!,
-              deletedRow,
-            );
+          if (targetRow == null && otherRows.isEmpty) {
+            // Deleted before first sync and never written
+            // anywhere: acknowledge locally without creating
+            // a worksheet or a remote row.
+            final acknowledged = await onSynced(transaction);
+            if (acknowledged) {
+              synced.add(transaction.uuid);
+            } else {
+              failed.add(transaction.uuid);
+            }
+            continue;
           }
-          for (final entry in otherRows) {
+          // Previously synchronized: keep every existing row,
+          // marked deleted. No row is created for a deleted
+          // transaction.
+          final rowsToTombstone = <MapEntry<int, SheetRowData>>[];
+          if (targetRow != null && targetRow.rowIndex != null) {
+            rowsToTombstone.add(MapEntry(targetYear, targetRow));
+          }
+          rowsToTombstone.addAll(otherRows);
+          for (final entry in rowsToTombstone) {
             final row = entry.value;
             if (row.rowIndex == null) {
               continue;
             }
+            await prepareYear(entry.key);
             await backend.updateRow(
               spreadsheetId,
               entry.key,
@@ -431,6 +480,7 @@ class SheetsSyncEngine {
             if (row.rowIndex == null) {
               continue;
             }
+            await prepareYear(entry.key);
             await backend.updateRow(
               spreadsheetId,
               entry.key,
@@ -439,15 +489,18 @@ class SheetsSyncEngine {
             );
           }
 
-          if (targetRow != null && targetRow.rowIndex != null) {
+          await prepareYear(targetYear);
+          final currentTargetRow = findRow(targetYear, transaction.uuid);
+          if (currentTargetRow != null &&
+              currentTargetRow.rowIndex != null) {
             final updatedRow = SheetRowData.fromTransaction(
               transaction,
-              rowIndex: targetRow.rowIndex,
+              rowIndex: currentTargetRow.rowIndex,
             );
             await backend.updateRow(
               spreadsheetId,
               targetYear,
-              targetRow.rowIndex!,
+              currentTargetRow.rowIndex!,
               updatedRow,
             );
           } else {
@@ -463,6 +516,8 @@ class SheetsSyncEngine {
         // local row is still the revision that was uploaded. A
         // concurrent edit makes this return false, so the newer
         // revision stays pending and the next retry uploads it.
+        // (For a deleted-before-first-sync transaction this is
+        // the only step, already handled above.)
         final acknowledged = await onSynced(transaction);
         if (acknowledged) {
           synced.add(transaction.uuid);

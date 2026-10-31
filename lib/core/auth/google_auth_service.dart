@@ -9,21 +9,48 @@ import '../sync/sheets_sync.dart';
 
 /// Google authentication for Sheets backup.
 ///
-/// Two modes, kept strictly separate:
+/// Two modes, kept strictly separate, by construction: the
+/// background code path never reaches the methods that can show
+/// UI.
 ///
-/// - **Silent / background** (`allowInteractiveAuthorization: false`,
-///   the default): may only *inspect* existing authorization with
-///   `authorizationForScopes`. It never calls `authorizeScopes`,
-///   never calls `authenticate()`, and never shows an account
-///   picker or consent prompt. If authorization is missing it
-///   throws [SheetsAuthorizationMissingException]; pending work
-///   is retained and Settings presents the explicit authorize
-///   action. This is the mode used by background sync, including
-///   app startup.
+/// - **Background / in-memory-only** (`allowInteractiveAuthorization:
+///   false`, the default): reads only the in-memory signed-in
+///   account (`_currentUser`), set during this app session by an
+///   explicit Settings sign-in or by `authenticationEvents`.
+///   It never calls `initialize()`, `attemptLightweightAuthentication()`,
+///   `authenticate()`, or `authorizeScopes()`. If there is no
+///   in-memory account it throws [SheetsNotSignedInException];
+///   if the scopes are not already authorized it inspects that
+///   with `authorizationForScopes` only and throws
+///   [SheetsAuthorizationMissingException]. Pending work is
+///   retained in both cases. This is the mode used by background
+///   sync, including app startup (`main.dart`).
 /// - **Interactive / user-initiated** (`allowInteractiveAuthorization:
 ///   true`, only from an explicit Settings action): may call
-///   `authenticate()` when no user is signed in and
-///   `authorizeScopes` when scopes are not yet granted.
+///   `attemptLightweightAuthentication()` (via [restoreSession]),
+///   `authenticate()`, and `authorizeScopes`.
+///
+/// `attemptLightweightAuthentication()` is NOT guaranteed to be
+/// silent: the google_sign_in 7.x migration guide states it "is
+/// no longer guaranteed to be silent. For example, as of the
+/// publishing of 7.0, on web this may show a floating sign-in
+/// card, and on Android it may show an account selection sheet."
+/// It is also "no longer guaranteed to return a future": on
+/// platforms where it returns no `Future`, the result arrives
+/// through the `authenticationEvents` stream instead. That is
+/// why [restoreSession] is Settings-only and handles both a
+/// nullable returned `Future` and the stream, and why no
+/// comment or document in this PR may claim lightweight
+/// authentication is guaranteed silent.
+///
+/// `authorizationForScopes` is the silent inspection method: it
+/// returns an access token if the requested scopes are already
+/// authorized, or null if not. `authorizeScopes` "is expected to
+/// show UI" and, on platforms where
+/// `authorizationRequiresUserInteraction()` returns true, "must
+/// be initiated from a user interaction like a button press"
+/// (pub.dev, google_sign_in 7.2.0). It is therefore called only
+/// from the explicit Settings authorize action.
 ///
 /// Only the two scopes the operations need are ever requested:
 /// - `drive.file`: find/create the "Expense Tracker" folder and
@@ -37,14 +64,12 @@ import '../sync/sheets_sync.dart';
 /// web client id below is a public OAuth client id, not a secret;
 /// no service-account credentials are embedded anywhere in the app.
 ///
-/// This file was written against google_sign_in 7.2.0 as described
-/// by the reviewer: `attemptLightweightAuthentication()` returns
-/// `Future<GoogleSignInAccount?>`. Its result is used when present;
-/// when it returns null, restoration waits (bounded) for the
-/// `authenticationEvents` stream, which remains the source of
-/// later session changes. Compile/analyze could not be run in the
-/// implementation environment; the reviewer must verify these
-/// calls with `flutter analyze` on a Flutter machine.
+/// This file was written against google_sign_in 7.2.0 as
+/// described in the pub.dev page and migration guide. Compile/
+/// analyze could not be run in the implementation environment;
+/// the reviewer must verify these calls with `flutter analyze`
+/// on a Flutter machine, including the nullable-Future handling
+/// in [restoreSession].
 class GoogleAuthService {
   GoogleAuthService._();
 
@@ -92,8 +117,11 @@ class GoogleAuthService {
 
       // Retain the subscription for the app's lifetime: it is the
       // source of later session changes, and it completes a
-      // pending restore when lightweight authentication reports
-      // through the stream instead of through its Future.
+      // pending explicit restore when lightweight authentication
+      // reports through the stream instead of through its Future.
+      // The subscription is kept even though background sync never
+      // initiates authentication: it only observes events from
+      // the active app session.
       _authSubscription ??= _googleSignIn.authenticationEvents.listen(
         _handleAuthenticationEvent,
         onError: (_) {},
@@ -117,13 +145,16 @@ class GoogleAuthService {
     }
   }
 
-  /// Best-effort restoration of a previous session, without UI and
-  /// without showing any picker or consent prompt.
+  /// Restores a previous session after an explicit user action in
+  /// Settings. SETTINGS-ONLY: never call this from background
+  /// sync, app startup, or any other non-interactive path.
   ///
-  /// `attemptLightweightAuthentication()` returns a nullable
-  /// Future: a non-null account is used directly. When it returns
-  /// null, this waits (bounded to 2 seconds) for the
-  /// authentication-events stream, which may still deliver the
+  /// `attemptLightweightAuthentication()` may show UI (see the
+  /// class documentation) and may not return a `Future`. When it
+  /// returns a `Future`, the returned account is used when
+  /// present; when it returns no `Future`, or the `Future`
+  /// resolves to null, this waits (bounded to 2 seconds) for the
+  /// `authenticationEvents` stream, which may still deliver the
   /// restored account. If neither delivers an account, the user
   /// is treated as signed out for this attempt only — local data
   /// and pending sync work are untouched, and the user can sign
@@ -152,7 +183,13 @@ class GoogleAuthService {
 
     GoogleSignInAccount? account;
     try {
-      account = await _googleSignIn.attemptLightweightAuthentication();
+      // Nullable Future: some platforms return no Future at all,
+      // in which case the result arrives via the stream below.
+      final Future<GoogleSignInAccount?>? lightweightFuture =
+          _googleSignIn.attemptLightweightAuthentication();
+      if (lightweightFuture != null) {
+        account = await lightweightFuture;
+      }
     } catch (_) {
       account = null;
     }
@@ -184,8 +221,19 @@ class GoogleAuthService {
     }
   }
 
+  /// Explicit, user-initiated sign-in. Call only from a Settings
+  /// button tap. On platforms where `supportsAuthenticate`
+  /// returns false (web), interactive sign-in needs the
+  /// platform-provided sign-in button instead; this Android app
+  /// does not implement that path.
   Future<GoogleSignInAccount?> signIn() async {
     await initialize();
+
+    if (!_googleSignIn.supportsAuthenticate()) {
+      throw const SheetsNotSignedInException(
+        'Interactive sign-in is not supported on this platform.',
+      );
+    }
 
     final user = await _googleSignIn.authenticate();
 
@@ -204,9 +252,10 @@ class GoogleAuthService {
 
   GoogleSignInAccount? get currentUser => _currentUser;
 
-  Future<GoogleSignInAccount> _ensureSignedInUser({
-    required bool allowInteractiveSignIn,
-  }) async {
+  /// Interactive sign-in path, Settings-only: initialize, then
+  /// explicit restore, then interactive sign-in when needed.
+  /// Background code must never call this.
+  Future<GoogleSignInAccount> _ensureSignedInUserInteractive() async {
     await initialize();
 
     if (_currentUser == null) {
@@ -215,7 +264,7 @@ class GoogleAuthService {
 
     var user = _currentUser;
 
-    if (user == null && allowInteractiveSignIn) {
+    if (user == null) {
       user = await signIn();
     }
 
@@ -226,15 +275,67 @@ class GoogleAuthService {
     return user;
   }
 
-  /// Inspect existing authorization only. Returns `true` when the
-  /// sync scopes are already authorized for the signed-in user,
-  /// `false` otherwise. Never prompts. Used by Settings to decide
-  /// whether to show the explicit authorize action.
-  Future<bool> hasSyncAuthorization() async {
+  /// Background path: inspect existing authorization for the
+  /// in-memory signed-in account only. Makes no authentication
+  /// or authorization UI call and never initiates a session:
+  /// it calls `authorizationForScopes` and nothing else. Throws
+  /// [SheetsNotSignedInException] when there is no in-memory
+  /// account and [SheetsAuthorizationMissingException] when the
+  /// scopes are not already authorized.
+  Future<GoogleSignInClientAuthorization> _backgroundAuthorization(
+    GoogleSignInAccount user,
+  ) async {
+    GoogleSignInClientAuthorization? existing;
     try {
-      final user = await _ensureSignedInUser(
-        allowInteractiveSignIn: false,
+      existing =
+          await user.authorizationClient.authorizationForScopes(
+        syncScopes,
       );
+    } catch (_) {
+      existing = null;
+    }
+    if (existing == null) {
+      throw const SheetsAuthorizationMissingException();
+    }
+    return existing;
+  }
+
+  /// Interactive path, Settings-only: inspect existing
+  /// authorization, falling back to `authorizeScopes` (a user
+  /// consent prompt) when authorization is absent. Cancellation
+  /// or revocation throws to the caller.
+  Future<GoogleSignInClientAuthorization> _interactiveAuthorization(
+    GoogleSignInAccount user,
+  ) async {
+    GoogleSignInClientAuthorization? existing;
+    try {
+      existing =
+          await user.authorizationClient.authorizationForScopes(
+        syncScopes,
+      );
+    } catch (_) {
+      existing = null;
+    }
+    if (existing != null) {
+      return existing;
+    }
+    return user.authorizationClient.authorizeScopes(syncScopes);
+  }
+
+  /// Inspect existing authorization only, for the in-memory
+  /// session. Returns `true` when the sync scopes are already
+  /// authorized for the signed-in user, `false` otherwise.
+  /// Never restores, signs in, or prompts: after an app restart
+  /// it returns `false` until the user reconnects from
+  /// Settings, which is the intended behaviour. Used by
+  /// Settings to decide whether to show the explicit authorize
+  /// action.
+  Future<bool> hasSyncAuthorization() async {
+    final user = _currentUser;
+    if (user == null) {
+      return false;
+    }
+    try {
       final existing =
           await user.authorizationClient.authorizationForScopes(
         syncScopes,
@@ -250,57 +351,21 @@ class GoogleAuthService {
   /// when needed, then requests the sync scopes. Throws on
   /// cancellation so the caller can leave state untouched.
   Future<void> authorizeForSync() async {
-    final user = await _ensureSignedInUser(
-      allowInteractiveSignIn: true,
-    );
-    await _authorize(
-      user,
-      syncScopes,
-      allowInteractiveAuthorization: true,
-    );
-  }
-
-  /// Authorize [scopes].
-  ///
-  /// Silent mode inspects existing authorization only and throws
-  /// [SheetsAuthorizationMissingException] when it is absent.
-  /// Interactive mode falls back to `authorizeScopes` (a user
-  /// consent prompt) when authorization is absent. Cancellation
-  /// or revocation throws to the caller.
-  Future<GoogleSignInClientAuthorization> _authorize(
-    GoogleSignInAccount user,
-    List<String> scopes, {
-    required bool allowInteractiveAuthorization,
-  }) async {
-    GoogleSignInClientAuthorization? existing;
-    try {
-      existing =
-          await user.authorizationClient.authorizationForScopes(scopes);
-    } catch (_) {
-      existing = null;
-    }
-    if (existing != null) {
-      return existing;
-    }
-
-    if (!allowInteractiveAuthorization) {
-      throw const SheetsAuthorizationMissingException();
-    }
-
-    return user.authorizationClient.authorizeScopes(scopes);
+    final user = await _ensureSignedInUserInteractive();
+    await _interactiveAuthorization(user);
   }
 
   Future<drive.DriveApi> getDriveApi({
     bool allowInteractiveAuthorization = false,
   }) async {
-    final user = await _ensureSignedInUser(
-      allowInteractiveSignIn: allowInteractiveAuthorization,
-    );
-    final authorization = await _authorize(
-      user,
-      syncScopes,
-      allowInteractiveAuthorization: allowInteractiveAuthorization,
-    );
+    final authorization = allowInteractiveAuthorization
+        ? await _interactiveAuthorization(
+            await _ensureSignedInUserInteractive(),
+          )
+        : await _backgroundAuthorization(
+            _currentUser ??
+                (throw const SheetsNotSignedInException()),
+          );
     final authenticatedClient = authorization.authClient(
       scopes: syncScopes,
     );
@@ -310,14 +375,14 @@ class GoogleAuthService {
   Future<sheets.SheetsApi> getSheetsApi({
     bool allowInteractiveAuthorization = false,
   }) async {
-    final user = await _ensureSignedInUser(
-      allowInteractiveSignIn: allowInteractiveAuthorization,
-    );
-    final authorization = await _authorize(
-      user,
-      syncScopes,
-      allowInteractiveAuthorization: allowInteractiveAuthorization,
-    );
+    final authorization = allowInteractiveAuthorization
+        ? await _interactiveAuthorization(
+            await _ensureSignedInUserInteractive(),
+          )
+        : await _backgroundAuthorization(
+            _currentUser ??
+                (throw const SheetsNotSignedInException()),
+          );
     final authenticatedClient = authorization.authClient(
       scopes: syncScopes,
     );

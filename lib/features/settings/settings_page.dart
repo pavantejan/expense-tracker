@@ -100,13 +100,25 @@ class _SettingsPageState extends State<SettingsPage> {
   // GOOGLE SIGN IN
   // ============================================================
 
+  /// Explicit reconnect / sign-in, from this button tap only.
+  ///
+  /// After an app restart there is no in-memory session, and
+  /// background sync never restores one on its own. Tapping
+  /// this button first tries an explicit restore of the
+  /// previous session (which may itself show an account
+  /// sheet — that is allowed here because the user tapped),
+  /// then falls back to interactive sign-in when no session
+  /// was restored.
   Future<void> _signInWithGoogle() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      await _googleAuthService.signIn();
+      await _googleAuthService.restoreSession();
+      if (_googleAuthService.currentUser == null) {
+        await _googleAuthService.signIn();
+      }
 
       if (!mounted) {
         return;
@@ -355,6 +367,16 @@ class _SettingsPageState extends State<SettingsPage> {
                               style:
                                   theme.textTheme.bodyMedium,
                             ),
+                            if (email == null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'After restarting the app, sign in here '
+                                'to reconnect Google Sheets backup. '
+                                'Background sync never signs you in '
+                                'on its own.',
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
                           ],
                         ),
                       ),

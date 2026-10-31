@@ -17,6 +17,16 @@ class FakeSheetsBackend implements SheetsSyncBackend {
   bool failNextWrite = false;
   bool failNextAppend = false;
   bool failNextUpdate = false;
+
+  /// When true, listing year worksheets throws, as the production
+  /// backend does when discovery fails. The engine must abort
+  /// the whole run in that case.
+  bool failListYearSheets = false;
+
+  /// Years `ensureYearSheet` was called for, in call order.
+  /// Mirrors production: calling it for a missing year creates
+  /// that year, so tests can prove a path created nothing.
+  final List<int> ensureCalls = <int>[];
   int appendCalls = 0;
   int updateCalls = 0;
 
@@ -37,11 +47,15 @@ class FakeSheetsBackend implements SheetsSyncBackend {
 
   @override
   Future<List<int>> listYearSheets(String spreadsheetId) async {
+    if (failListYearSheets) {
+      throw Exception('Worksheet discovery failed');
+    }
     return sheets.keys.toList();
   }
 
   @override
   Future<void> ensureYearSheet(String spreadsheetId, int year) async {
+    ensureCalls.add(year);
     sheets.putIfAbsent(year, () => <SheetRowData>[]);
   }
 
@@ -258,6 +272,16 @@ class FakeSheetsApiClient implements SheetsApiClient {
   SheetsApiException? writeError;
   int titlesCalls = 0;
 
+  /// The value-input option the production backend requested on
+  /// the most recent write, so tests can prove transaction
+  /// values are written RAW. This records the backend's choice
+  /// of option only; it says nothing about how the Sheets API
+  /// itself interprets RAW (that is a Google-side behaviour).
+  SheetsValueInputOption? lastUpdateInputOption;
+  SheetsValueInputOption? lastAppendInputOption;
+  String? lastUpdateRange;
+  String? lastAppendRange;
+
   @override
   Future<String> resolveSpreadsheetId() async => 'spreadsheet-1';
 
@@ -289,13 +313,31 @@ class FakeSheetsApiClient implements SheetsApiClient {
     String spreadsheetId,
     String range,
     List<List<Object?>> values, {
-    required bool userEntered,
+    required SheetsValueInputOption valueInputOption,
   }) async {
     final error = writeError;
     if (error != null) {
       throw error;
     }
+    lastUpdateInputOption = valueInputOption;
+    lastUpdateRange = range;
     final year = int.parse(range.replaceAll("'", '').split('!').first);
+    final rows = sheets.putIfAbsent(year, () => <List<Object?>>[]);
+    // The backend writes single-row ranges such as A1:J1 or
+    // A3:J3: replace exactly those rows, leaving the rest
+    // untouched (mirrors the Sheets API for a bounded range).
+    final rowMatch = RegExp(r'A(\d+):').firstMatch(range);
+    if (rowMatch != null) {
+      final startIndex = int.parse(rowMatch.group(1)!) - 1;
+      for (var i = 0; i < values.length; i++) {
+        final index = startIndex + i;
+        while (rows.length <= index) {
+          rows.add(const <Object?>[]);
+        }
+        rows[index] = values[i];
+      }
+      return;
+    }
     sheets[year] = values;
   }
 
@@ -303,12 +345,15 @@ class FakeSheetsApiClient implements SheetsApiClient {
   Future<void> appendValues(
     String spreadsheetId,
     String range,
-    List<List<Object?>> values,
-  ) async {
+    List<List<Object?>> values, {
+    required SheetsValueInputOption valueInputOption,
+  }) async {
     final error = writeError;
     if (error != null) {
       throw error;
     }
+    lastAppendInputOption = valueInputOption;
+    lastAppendRange = range;
     final year = int.parse(range.replaceAll("'", '').split('!').first);
     final rows = sheets.putIfAbsent(year, () => <List<Object?>>[]);
     rows.addAll(values);
@@ -501,6 +546,43 @@ void main() {
 
       expect(store.pending, isEmpty);
       expect(backend.sheets, isEmpty);
+      expect(backend.ensureCalls, isEmpty);
+      expect(backend.appendCalls, 0);
+      expect(backend.updateCalls, 0);
+    });
+
+    test('deleted before first sync creates nothing even when other years exist', () async {
+      final backend = FakeSheetsBackend();
+      backend.seedRow(2024, SheetRowData.fromTransaction(makeTx(uuid: 'old')));
+      final store = FakeStore([makeTx(deleted: true)]);
+
+      await runEngine(SheetsSyncEngine(), backend, store);
+
+      expect(store.pending, isEmpty);
+      expect(backend.sheets.keys, [2024]);
+      expect(backend.ensureCalls, isEmpty);
+      expect(backend.sheets[2024], hasLength(1));
+    });
+
+    test('deleted transaction with a prior row in another year tombstones it and creates no new sheet', () async {
+      final backend = FakeSheetsBackend();
+      backend.seedRow(
+        2025,
+        SheetRowData.fromTransaction(makeTx(date: DateTime(2025, 12, 31))),
+      );
+      // Local date moved to 2026 and the transaction deleted.
+      final store = FakeStore([
+        makeTx(date: DateTime(2026, 1, 5), deleted: true),
+      ]);
+
+      await runEngine(SheetsSyncEngine(), backend, store);
+
+      expect(store.pending, isEmpty);
+      expect(backend.sheets[2026], isNull);
+      expect(backend.ensureCalls, [2025]);
+      expect(backend.sheets[2025], hasLength(1));
+      expect(backend.sheets[2025]!.single.deleted, isTrue);
+      expect(backend.activeRows(2025), isEmpty);
     });
 
     test('moving across years deletes the old row and writes the new year', () async {
@@ -1023,7 +1105,13 @@ void main() {
     });
   });
 
-  group('Authorization mode separation', () {
+  group('Authorization mode routing (not plugin behaviour)', () {
+    // These tests prove only which mode this code requests from
+    // its own factory boundary. They do NOT prove what the
+    // google_sign_in plugin does on a device: whether a given
+    // plugin call shows UI is a platform behaviour documented
+    // in the migration guide, and must be verified by the
+    // manual Android checklist, not by a fake.
     test('silent backend requests no interactive authorization', () async {
       var requestedInteractive = false;
       SheetsApiClient factory({required bool interactive}) {
@@ -1064,6 +1152,314 @@ void main() {
         GoogleSheetsBackend.interactiveInstance.interactive,
         isTrue,
       );
+    });
+  });
+
+  group('Worksheet discovery failure aborts the run', () {
+    test('listYearSheets failure: no writes, no acks, old row stays active, no new sheet', () async {
+      final backend = FakeSheetsBackend();
+      backend.seedRow(
+        2025,
+        SheetRowData.fromTransaction(makeTx(date: DateTime(2025, 12, 31))),
+      );
+      // Local date moved to 2026.
+      final store = FakeStore([makeTx(date: DateTime(2026, 1, 5))]);
+      backend.failListYearSheets = true;
+
+      await expectLater(
+        SheetsSyncEngine().syncAll(
+          pending: await store.getPending(),
+          backend: backend,
+          onSynced: (tx) => store.markSynced(tx),
+        ),
+        throwsException,
+      );
+
+      expect(store.pending, hasLength(1));
+      expect(backend.appendCalls, 0);
+      expect(backend.updateCalls, 0);
+      expect(backend.ensureCalls, isEmpty);
+      expect(backend.resolveCalls, 1);
+      expect(backend.sheets.keys, [2025]);
+      expect(backend.activeRows(2025), hasLength(1));
+      expect(backend.sheets[2026], isNull);
+    });
+
+    test('retry after discovery recovers converges the year move', () async {
+      final backend = FakeSheetsBackend();
+      backend.seedRow(
+        2025,
+        SheetRowData.fromTransaction(makeTx(date: DateTime(2025, 12, 31))),
+      );
+      final store = FakeStore([makeTx(date: DateTime(2026, 1, 5))]);
+      backend.failListYearSheets = true;
+      final engine = SheetsSyncEngine();
+
+      await expectLater(
+        engine.syncAll(
+          pending: await store.getPending(),
+          backend: backend,
+          onSynced: (tx) => store.markSynced(tx),
+        ),
+        throwsException,
+      );
+      expect(store.pending, hasLength(1));
+
+      backend.failListYearSheets = false;
+      await runEngine(engine, backend, store);
+
+      expect(store.pending, isEmpty);
+      expect(backend.activeRows(2025), isEmpty);
+      expect(backend.activeRows(2026), hasLength(1));
+    });
+  });
+
+  group('Missing or revoked session never marks synced', () {
+    test('not signed in aborts before any write or acknowledgement', () async {
+      final backend = _NotSignedInBackend();
+      final store = FakeStore([makeTx()]);
+
+      await expectLater(
+        SheetsSyncEngine().syncAll(
+          pending: await store.getPending(),
+          backend: backend,
+          onSynced: (tx) => store.markSynced(tx),
+        ),
+        throwsA(isA<SheetsNotSignedInException>()),
+      );
+      expect(store.pending, hasLength(1));
+      expect(store.markedSynced, isEmpty);
+    });
+
+    test('authorization missing aborts before any write or acknowledgement', () async {
+      final backend = _AuthorizationMissingBackend();
+      final store = FakeStore([makeTx()]);
+
+      await expectLater(
+        SheetsSyncEngine().syncAll(
+          pending: await store.getPending(),
+          backend: backend,
+          onSynced: (tx) => store.markSynced(tx),
+        ),
+        throwsA(isA<SheetsAuthorizationMissingException>()),
+      );
+      expect(store.pending, hasLength(1));
+      expect(store.markedSynced, isEmpty);
+    });
+  });
+
+  group('RAW transaction values', () {
+    const formulaDescription =
+        '=IMPORTXML("https://example.invalid","//x")';
+    const formulaNotes = '=1+1';
+
+    test('append stores formula-like text literally and keeps amount numeric, with RAW', () async {
+      final client = FakeSheetsApiClient();
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+      final row = SheetRowData.fromTransaction(
+        makeTx(description: formulaDescription, notes: formulaNotes),
+      );
+
+      await backend.appendRow('spreadsheet-1', 2026, row);
+
+      expect(client.lastAppendInputOption, SheetsValueInputOption.raw);
+      final stored = client.sheets[2026]!.single;
+      expect(stored[3], formulaDescription);
+      expect(stored[7], formulaNotes);
+      expect(stored[4], isA<num>());
+      expect(stored[4], 250);
+
+      // Reading it back parses the same literal values.
+      final rows = await backend.readYearSheet('spreadsheet-1', 2026);
+      expect(rows, hasLength(1));
+      expect(rows.single.description, formulaDescription);
+      expect(rows.single.notes, formulaNotes);
+      expect(rows.single.amount, 250);
+    });
+
+    test('update stores formula-like text literally with RAW', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2026] = <List<Object?>>[
+        sheetHeaders,
+        <Object?>[
+          '2026-03-10',
+          'Expense',
+          'Food',
+          'Lunch',
+          250,
+          'uuid-1',
+          'UPI',
+          '',
+          '2026-03-10T12:00:00.000',
+          'FALSE',
+        ],
+      ];
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+      final row = SheetRowData.fromTransaction(
+        makeTx(description: formulaDescription, notes: formulaNotes),
+        rowIndex: 2,
+      );
+
+      await backend.updateRow('spreadsheet-1', 2026, 2, row);
+
+      expect(client.lastUpdateInputOption, SheetsValueInputOption.raw);
+      expect(client.sheets[2026], hasLength(2));
+      expect(client.sheets[2026]![1][3], formulaDescription);
+      expect(client.sheets[2026]![1][7], formulaNotes);
+      expect(client.sheets[2026]![1][4], isA<num>());
+    });
+
+    test('header writing still uses RAW (unchanged behaviour)', () async {
+      final client = FakeSheetsApiClient();
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+
+      await backend.ensureYearSheet('spreadsheet-1', 2026);
+
+      expect(client.lastUpdateInputOption, SheetsValueInputOption.raw);
+      expect(client.sheets[2026]!.first, sheetHeaders);
+    });
+  });
+
+  group('Legacy five-column headers', () {
+    const legacyHeader = <Object?>[
+      'Date',
+      'Type',
+      'Category',
+      'Description',
+      'Amount',
+    ];
+
+    List<Object?> legacyRow(
+      String date,
+      String description,
+      Object amount,
+    ) {
+      return <Object?>[date, 'Expense', 'Food', description, amount];
+    }
+
+    test('ensureYearSheet extends only the header row to A:J and preserves every data row', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2025] = <List<Object?>>[
+        legacyHeader,
+        legacyRow('2025-01-05', 'Old lunch', 120),
+        legacyRow('2025-02-11', 'Bus fare', 40),
+        legacyRow('2025-03-20', 'Books', 350),
+      ];
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+
+      await backend.ensureYearSheet('spreadsheet-1', 2025);
+
+      final stored = client.sheets[2025]!;
+      expect(stored, hasLength(4));
+      expect(stored.first, sheetHeaders);
+      expect(stored[1], legacyRow('2025-01-05', 'Old lunch', 120));
+      expect(stored[2], legacyRow('2025-02-11', 'Bus fare', 40));
+      expect(stored[3], legacyRow('2025-03-20', 'Books', 350));
+      // No UUID was invented for any legacy row.
+      for (var i = 1; i < stored.length; i++) {
+        expect(stored[i].length, 5);
+      }
+    });
+
+    test('readYearSheet skips the legacy header and returns legacy rows with empty UUIDs', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2025] = <List<Object?>>[
+        legacyHeader,
+        legacyRow('2025-01-05', 'Old lunch', 120),
+        legacyRow('2025-02-11', 'Bus fare', 40),
+      ];
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+
+      final rows = await backend.readYearSheet('spreadsheet-1', 2025);
+
+      expect(rows, hasLength(2));
+      expect(rows[0].uuid, '');
+      expect(rows[0].description, 'Old lunch');
+      expect(rows[0].amount, 120);
+      expect(rows[0].rowIndex, 2);
+      expect(rows[1].uuid, '');
+      expect(rows[1].rowIndex, 3);
+    });
+
+    test('engine sync preserves legacy rows and appends the new UUID row', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2026] = <List<Object?>>[
+        legacyHeader,
+        legacyRow('2026-01-05', 'Old lunch', 120),
+        legacyRow('2026-02-11', 'Bus fare', 40),
+      ];
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+      final store = FakeStore([makeTx(date: DateTime(2026, 3, 10))]);
+      final engine = SheetsSyncEngine();
+
+      await engine.syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (tx) => store.markSynced(tx),
+      );
+
+      final stored = client.sheets[2026]!;
+      expect(stored, hasLength(4));
+      expect(stored.first, sheetHeaders);
+      expect(stored[1], legacyRow('2026-01-05', 'Old lunch', 120));
+      expect(stored[2], legacyRow('2026-02-11', 'Bus fare', 40));
+      expect(stored[3][5], 'uuid-1');
+      expect(stored[3][3], 'Lunch');
+      expect(store.pending, isEmpty);
+    });
+
+    test('year move with a legacy old-year sheet leaves legacy rows untouched', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2025] = <List<Object?>>[
+        legacyHeader,
+        legacyRow('2025-12-01', 'Old lunch', 120),
+      ];
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+      final store = FakeStore([makeTx(date: DateTime(2026, 1, 5))]);
+      final engine = SheetsSyncEngine();
+
+      await engine.syncAll(
+        pending: await store.getPending(),
+        backend: backend,
+        onSynced: (tx) => store.markSynced(tx),
+      );
+
+      // The legacy 2025 header was extended (engine prepared
+      // 2026 only for the write; 2025 was read, not written,
+      // because no UUID row matched there). Legacy data row
+      // is byte-for-byte the same.
+      final stored2025 = client.sheets[2025]!;
+      expect(stored2025, hasLength(2));
+      expect(stored2025[1], legacyRow('2025-12-01', 'Old lunch', 120));
+      expect(stored2025[0], legacyHeader);
+      expect(client.sheets[2026]!.last[5], 'uuid-1');
+      expect(store.pending, isEmpty);
+    });
+
+    test('a current A:J header is left alone by ensureYearSheet', () async {
+      final client = FakeSheetsApiClient();
+      client.sheets[2026] = <List<Object?>>[
+        sheetHeaders,
+        <Object?>[
+          '2026-03-10',
+          'Expense',
+          'Food',
+          'Lunch',
+          250,
+          'uuid-9',
+          'UPI',
+          '',
+          '2026-03-10T12:00:00.000',
+          'FALSE',
+        ],
+      ];
+      final backend = GoogleSheetsBackend.forTesting(client: client);
+
+      await backend.ensureYearSheet('spreadsheet-1', 2026);
+
+      expect(client.lastUpdateInputOption, isNull);
+      expect(client.sheets[2026], hasLength(2));
+      expect(client.sheets[2026]!.first, sheetHeaders);
     });
   });
 }
