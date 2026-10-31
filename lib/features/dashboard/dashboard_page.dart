@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/database/repository_provider.dart';
@@ -5,6 +7,7 @@ import '../../data/database/app_database.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
 import '../../core/categories/category.dart';
+import '../../core/sync/sync_coordinator.dart';
 import '../analytics/monthly_category_analytics_page.dart';
 import '../transactions/add_transaction_page.dart';
 import '../transactions/all_transactions_page.dart';
@@ -19,10 +22,7 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  DateTime _selectedMonth = DateTime(
-    DateTime.now().year,
-    DateTime.now().month,
-  );
+  DateTime _selectedMonth = DateTime(DateTime.now().year, DateTime.now().month);
 
   void _changeMonth(int monthOffset) {
     setState(() {
@@ -42,10 +42,7 @@ class _DashboardPageState extends State<DashboardPage> {
       builder: (context, snapshot) {
         final allTransactions = snapshot.data ?? [];
 
-        final monthStart = DateTime(
-          _selectedMonth.year,
-          _selectedMonth.month,
-        );
+        final monthStart = DateTime(_selectedMonth.year, _selectedMonth.month);
 
         final nextMonthStart = DateTime(
           _selectedMonth.year,
@@ -79,56 +76,42 @@ class _DashboardPageState extends State<DashboardPage> {
               (transaction) =>
                   transaction.transactionDate.isBefore(nextMonthStart),
             )
-            .fold<double>(
-          0,
-          (balance, transaction) {
-            if (transaction.type == 'Income') {
-              return balance + transaction.amount;
-            }
+            .fold<double>(0, (balance, transaction) {
+              if (transaction.type == 'Income') {
+                return balance + transaction.amount;
+              }
 
-            return balance - transaction.amount;
-          },
-        );
+              return balance - transaction.amount;
+            });
 
         final recentTransactions = [...transactions]
-          ..sort(
-            (a, b) => b.transactionDate.compareTo(
-              a.transactionDate,
-            ),
-          );
+          ..sort((a, b) => b.transactionDate.compareTo(a.transactionDate));
 
-        final displayedTransactions =
-            recentTransactions.take(5).toList();
+        final displayedTransactions = recentTransactions.take(5).toList();
 
         return Scaffold(
           appBar: AppBar(
             title: const Text(
               'Expense Tracker',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
             actions: [
               IconButton(
                 onPressed: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => const AllTransactionsPage(
-                        autoFocusSearch: true,
-                      ),
+                      builder: (_) =>
+                          const AllTransactionsPage(autoFocusSearch: true),
                     ),
                   );
                 },
-                icon: const Icon(
-                  Icons.search_rounded,
-                ),
+                icon: const Icon(Icons.search_rounded),
                 tooltip: 'Search',
               ),
               AnimatedBuilder(
                 animation: NotificationManager.instance,
                 builder: (context, child) {
-                  final unreadCount =
-                      NotificationManager.instance.unreadCount;
+                  final unreadCount = NotificationManager.instance.unreadCount;
 
                   return Stack(
                     alignment: Alignment.center,
@@ -137,9 +120,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         onPressed: () {
                           _showNotifications(context);
                         },
-                        icon: const Icon(
-                          Icons.notifications_none_rounded,
-                        ),
+                        icon: const Icon(Icons.notifications_none_rounded),
                         tooltip: 'Notifications',
                       ),
                       if (unreadCount > 0)
@@ -150,8 +131,7 @@ class _DashboardPageState extends State<DashboardPage> {
                             width: 9,
                             height: 9,
                             decoration: BoxDecoration(
-                              color:
-                                  Theme.of(context).colorScheme.error,
+                              color: Theme.of(context).colorScheme.error,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -163,14 +143,10 @@ class _DashboardPageState extends State<DashboardPage> {
               IconButton(
                 onPressed: () async {
                   await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const SettingsPage(),
-                    ),
+                    MaterialPageRoute(builder: (_) => const SettingsPage()),
                   );
                 },
-                icon: const Icon(
-                  Icons.settings_rounded,
-                ),
+                icon: const Icon(Icons.settings_rounded),
                 tooltip: 'Settings',
               ),
             ],
@@ -180,16 +156,13 @@ class _DashboardPageState extends State<DashboardPage> {
               padding: const EdgeInsets.all(16),
               children: [
                 Row(
-                  mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     IconButton(
                       onPressed: () {
                         _changeMonth(-1);
                       },
-                      icon: const Icon(
-                        Icons.chevron_left_rounded,
-                      ),
+                      icon: const Icon(Icons.chevron_left_rounded),
                       tooltip: 'Previous month',
                     ),
                     Text(
@@ -202,9 +175,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       onPressed: () {
                         _changeMonth(1);
                       },
-                      icon: const Icon(
-                        Icons.chevron_right_rounded,
-                      ),
+                      icon: const Icon(Icons.chevron_right_rounded),
                       tooltip: 'Next month',
                     ),
                   ],
@@ -214,18 +185,13 @@ class _DashboardPageState extends State<DashboardPage> {
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Column(
-                      crossAxisAlignment:
-                          CrossAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Balance',
-                          style: theme.textTheme.titleMedium,
-                        ),
+                        Text('Balance', style: theme.textTheme.titleMedium),
                         const SizedBox(height: 8),
                         Text(
                           _formatAmount(closingBalance),
-                          style:
-                              theme.textTheme.headlineMedium?.copyWith(
+                          style: theme.textTheme.headlineMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -263,29 +229,22 @@ class _DashboardPageState extends State<DashboardPage> {
                 Card(
                   child: ListTile(
                     leading: const CircleAvatar(
-                      child: Icon(
-                        Icons.analytics_outlined,
-                      ),
+                      child: Icon(Icons.analytics_outlined),
                     ),
                     title: const Text(
                       'Monthly Summary',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                     subtitle: Text(
                       'View details for '
                       '${_formatMonth(_selectedMonth)}',
                     ),
-                    trailing: const Icon(
-                      Icons.chevron_right_rounded,
-                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => MonthlySummaryPage(
-                            initialMonth: _selectedMonth,
-                          ),
+                          builder: (_) =>
+                              MonthlySummaryPage(initialMonth: _selectedMonth),
                         ),
                       );
                     },
@@ -295,28 +254,21 @@ class _DashboardPageState extends State<DashboardPage> {
                 Card(
                   child: ListTile(
                     leading: const CircleAvatar(
-                      child: Icon(
-                        Icons.pie_chart_outline_rounded,
-                      ),
+                      child: Icon(Icons.pie_chart_outline_rounded),
                     ),
                     title: const Text(
                       'Category Analytics',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                     subtitle: Text(
                       'See where you spent in '
                       '${_formatMonth(_selectedMonth)}',
                     ),
-                    trailing: const Icon(
-                      Icons.chevron_right_rounded,
-                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) =>
-                              MonthlyCategoryAnalyticsPage(
+                          builder: (_) => MonthlyCategoryAnalyticsPage(
                             initialMonth: _selectedMonth,
                           ),
                         ),
@@ -326,13 +278,11 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(height: 28),
                 Row(
-                  mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
                       'Recent Transactions',
-                      style:
-                          theme.textTheme.titleLarge?.copyWith(
+                      style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -340,8 +290,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       onPressed: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) =>
-                                const AllTransactionsPage(),
+                            builder: (_) => const AllTransactionsPage(),
                           ),
                         );
                       },
@@ -362,14 +311,12 @@ class _DashboardPageState extends State<DashboardPage> {
                           Icon(
                             Icons.receipt_long_outlined,
                             size: 48,
-                            color:
-                                theme.colorScheme.primary,
+                            color: theme.colorScheme.primary,
                           ),
                           const SizedBox(height: 12),
                           Text(
                             'No transactions yet',
-                            style:
-                                theme.textTheme.titleMedium?.copyWith(
+                            style: theme.textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -378,8 +325,7 @@ class _DashboardPageState extends State<DashboardPage> {
                             'No transactions found for '
                             '${_formatMonth(_selectedMonth)}.',
                             textAlign: TextAlign.center,
-                            style:
-                                theme.textTheme.bodyMedium,
+                            style: theme.textTheme.bodyMedium,
                           ),
                         ],
                       ),
@@ -392,10 +338,8 @@ class _DashboardPageState extends State<DashboardPage> {
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (_) =>
-                                AddTransactionPage(
-                              transactionId:
-                                  transaction.id,
+                            builder: (_) => AddTransactionPage(
+                              transactionId: transaction.id,
                             ),
                           ),
                         );
@@ -405,22 +349,14 @@ class _DashboardPageState extends State<DashboardPage> {
               ],
             ),
           ),
-          floatingActionButton:
-              FloatingActionButton.extended(
+          floatingActionButton: FloatingActionButton.extended(
             onPressed: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      const AddTransactionPage(),
-                ),
+                MaterialPageRoute(builder: (_) => const AddTransactionPage()),
               );
             },
-            icon: const Icon(
-              Icons.add_rounded,
-            ),
-            label: const Text(
-              'Add Transaction',
-            ),
+            icon: const Icon(Icons.add_rounded),
+            label: const Text('Add Transaction'),
           ),
         );
       },
@@ -457,23 +393,12 @@ void _showNotifications(BuildContext context) {
     barrierDismissible: true,
     barrierLabel: 'Notifications',
     barrierColor: Colors.transparent,
-    transitionDuration:
-        const Duration(milliseconds: 200),
-    pageBuilder:
-        (context, animation, secondaryAnimation) {
+    transitionDuration: const Duration(milliseconds: 200),
+    pageBuilder: (context, animation, secondaryAnimation) {
       return const _NotificationPopup();
     },
-    transitionBuilder:
-        (
-          context,
-          animation,
-          secondaryAnimation,
-          child,
-        ) {
-      return FadeTransition(
-        opacity: animation,
-        child: child,
-      );
+    transitionBuilder: (context, animation, secondaryAnimation, child) {
+      return FadeTransition(opacity: animation, child: child);
     },
   );
 }
@@ -489,157 +414,99 @@ class _NotificationPopup extends StatelessWidget {
       child: Align(
         alignment: Alignment.topRight,
         child: Padding(
-          padding: const EdgeInsets.only(
-            top: 56,
-            right: 12,
-            left: 24,
-          ),
+          padding: const EdgeInsets.only(top: 56, right: 12, left: 24),
           child: Material(
             elevation: 8,
-            borderRadius:
-                BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(24),
             color: theme.colorScheme.surface,
             child: ConstrainedBox(
-              constraints:
-                  const BoxConstraints(
-                maxWidth: 360,
-                maxHeight: 520,
-              ),
+              constraints: const BoxConstraints(maxWidth: 360, maxHeight: 520),
               child: AnimatedBuilder(
-                animation:
-                    NotificationManager.instance,
+                animation: NotificationManager.instance,
                 builder: (context, child) {
                   final notifications =
-                      NotificationManager
-                          .instance
-                          .notifications;
+                      NotificationManager.instance.notifications;
 
                   return Padding(
-                    padding:
-                        const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(20),
                     child: Column(
-                      mainAxisSize:
-                          MainAxisSize.min,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Row(
                           children: [
                             Text(
                               'Notifications',
-                              style: theme
-                                  .textTheme
-                                  .titleLarge
-                                  ?.copyWith(
-                                fontWeight:
-                                    FontWeight.bold,
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
                             const Spacer(),
                             if (notifications.any(
-                              (notification) =>
-                                  !notification.isRead,
+                              (notification) => !notification.isRead,
                             ))
                               TextButton(
                                 onPressed: () {
-                                  NotificationManager
-                                      .instance
-                                      .markAllAsRead();
+                                  NotificationManager.instance.markAllAsRead();
                                 },
-                                child: const Text(
-                                  'Mark all read',
-                                ),
+                                child: const Text('Mark all read'),
                               ),
                           ],
                         ),
                         const SizedBox(height: 8),
                         if (notifications.isEmpty)
                           const Padding(
-                            padding:
-                                EdgeInsets.symmetric(
-                              vertical: 40,
-                            ),
+                            padding: EdgeInsets.symmetric(vertical: 40),
                             child: Column(
                               children: [
                                 Icon(
-                                  Icons
-                                      .notifications_none_rounded,
+                                  Icons.notifications_none_rounded,
                                   size: 48,
                                 ),
                                 SizedBox(height: 12),
-                                Text(
-                                  'No notifications',
-                                ),
+                                Text('No notifications'),
                               ],
                             ),
                           )
                         else
                           Flexible(
-                            child:
-                                ListView.separated(
+                            child: ListView.separated(
                               shrinkWrap: true,
-                              itemCount:
-                                  notifications.length,
-                              separatorBuilder:
-                                  (_, _) =>
-                                      const Divider(
-                                height: 1,
-                              ),
-                              itemBuilder:
-                                  (context, index) {
-                                final notification =
-                                    notifications[
-                                        index];
+                              itemCount: notifications.length,
+                              separatorBuilder: (_, _) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, index) {
+                                final notification = notifications[index];
 
                                 return ListTile(
-                                  contentPadding:
-                                      const EdgeInsets
-                                          .symmetric(
+                                  contentPadding: const EdgeInsets.symmetric(
                                     vertical: 4,
                                   ),
-                                  leading:
-                                      CircleAvatar(
+                                  leading: CircleAvatar(
                                     child: Icon(
-                                      _notificationIcon(
-                                        notification
-                                            .type,
-                                      ),
+                                      _notificationIcon(notification.type),
                                     ),
                                   ),
                                   title: Text(
                                     notification.title,
                                     style: TextStyle(
-                                      fontWeight:
-                                          notification
-                                                  .isRead
-                                              ? FontWeight
-                                                  .normal
-                                              : FontWeight
-                                                  .bold,
+                                      fontWeight: notification.isRead
+                                          ? FontWeight.normal
+                                          : FontWeight.bold,
                                     ),
                                   ),
-                                  subtitle: Text(
-                                    notification.message,
-                                  ),
-                                  trailing:
-                                      notification
-                                              .isRead
-                                          ? null
-                                          : Container(
-                                              width: 8,
-                                              height: 8,
-                                              decoration:
-                                                  BoxDecoration(
-                                                color: theme
-                                                    .colorScheme
-                                                    .primary,
-                                                shape:
-                                                    BoxShape
-                                                        .circle,
-                                              ),
-                                            ),
+                                  subtitle: Text(notification.message),
+                                  trailing: notification.isRead
+                                      ? null
+                                      : Container(
+                                          width: 8,
+                                          height: 8,
+                                          decoration: BoxDecoration(
+                                            color: theme.colorScheme.primary,
+                                            shape: BoxShape.circle,
+                                          ),
+                                        ),
                                   onTap: () {
-                                    NotificationManager
-                                        .instance
-                                        .markAsRead(
+                                    NotificationManager.instance.markAsRead(
                                       notification.id,
                                     );
                                   },
@@ -659,9 +526,7 @@ class _NotificationPopup extends StatelessWidget {
     );
   }
 
-  IconData _notificationIcon(
-    NotificationType type,
-  ) {
+  IconData _notificationIcon(NotificationType type) {
     switch (type) {
       case NotificationType.transactionAdded:
         return Icons.add_rounded;
@@ -696,29 +561,16 @@ class _SummaryCard extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(icon),
             const SizedBox(height: 12),
-            Text(
-              title,
-              style:
-                  Theme.of(context)
-                      .textTheme
-                      .bodyMedium,
-            ),
+            Text(title, style: Theme.of(context).textTheme.bodyMedium),
             const SizedBox(height: 4),
             Text(
               amount,
-              style:
-                  Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
+              style: Theme.of(context).textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.bold),
             ),
           ],
         ),
@@ -728,29 +580,21 @@ class _SummaryCard extends StatelessWidget {
 }
 
 class _TransactionCard extends StatelessWidget {
-  const _TransactionCard({
-    required this.transaction,
-    required this.onTap,
-  });
+  const _TransactionCard({required this.transaction, required this.onTap});
 
   final Transaction transaction;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final isIncome =
-        transaction.type == 'Income';
+    final isIncome = transaction.type == 'Income';
 
     return Card(
-      margin:
-          const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         onTap: onTap,
         onLongPress: () {
-          _showDeleteConfirmation(
-            context,
-            transaction,
-          );
+          _showDeleteConfirmation(context, transaction);
         },
         leading: CircleAvatar(
           child: Icon(
@@ -760,9 +604,7 @@ class _TransactionCard extends StatelessWidget {
           ),
         ),
         title: Text(
-          transaction.description
-                      ?.isNotEmpty ==
-                  true
+          transaction.description?.isNotEmpty == true
               ? transaction.description!
               : transaction.category,
         ),
@@ -773,9 +615,7 @@ class _TransactionCard extends StatelessWidget {
         trailing: Text(
           '${isIncome ? '+' : '-'}'
           '₹${transaction.amount.toStringAsFixed(2)}',
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
       ),
     );
@@ -796,14 +636,11 @@ Future<void> _showDeleteConfirmation(
   BuildContext context,
   Transaction transaction,
 ) async {
-  final confirmed =
-      await showDialog<bool>(
+  final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) {
       return AlertDialog(
-        title: const Text(
-          'Delete transaction?',
-        ),
+        title: const Text('Delete transaction?'),
         content: Text(
           'Are you sure you want to delete '
           '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} '
@@ -812,89 +649,76 @@ Future<void> _showDeleteConfirmation(
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.of(dialogContext)
-                  .pop(false);
+              Navigator.of(dialogContext).pop(false);
             },
-            child: const Text(
-              'Cancel',
-            ),
+            child: const Text('Cancel'),
           ),
           FilledButton(
             onPressed: () {
-              Navigator.of(dialogContext)
-                  .pop(true);
+              Navigator.of(dialogContext).pop(true);
             },
-            child: const Text(
-              'Delete',
-            ),
+            child: const Text('Delete'),
           ),
         ],
       );
     },
   );
 
-  if (confirmed != true ||
-      !context.mounted) {
+  if (confirmed != true || !context.mounted) {
     return;
   }
 
-  final deleted =
-      await transactionRepository
-          .deleteTransaction(
-    transaction.id,
-  );
+  final deleted = await transactionRepository.deleteTransaction(transaction.id);
 
-  if (!deleted ||
-      !context.mounted) {
+  if (!deleted || !context.mounted) {
     return;
   }
 
   NotificationManager.instance.add(
-    type:
-        NotificationType.transactionDeleted,
-    title:
-        'Transaction deleted',
+    type: NotificationType.transactionDeleted,
+    title: 'Transaction deleted',
     message:
         '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
         '₹${transaction.amount.toStringAsFixed(2)}',
   );
 
-  ScaffoldMessenger.of(context)
-      .showSnackBar(
+  unawaited(sheetsSyncCoordinator.requestSync());
+
+  ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      content: const Text(
-        'Transaction deleted',
-      ),
+      content: const Text('Transaction deleted'),
+      // A SnackBar with an action defaults to persist: true, which
+      // kept the Undo bar on screen until tapped. Explicitly
+      // auto-dismiss after 5 seconds; Undo still works within
+      // that window.
+      duration: const Duration(seconds: 5),
+      persist: false,
       action: SnackBarAction(
         label: 'UNDO',
         onPressed: () async {
-          final restored =
-              await transactionRepository
-                  .restoreTransaction(
+          final restored = await transactionRepository.restoreTransaction(
             transaction.id,
           );
 
-          if (!restored ||
-              !context.mounted) {
+          if (!restored || !context.mounted) {
             return;
           }
 
           NotificationManager.instance.add(
-            type: NotificationType
-                .transactionRestored,
-            title:
-                'Transaction restored',
+            type: NotificationType.transactionRestored,
+            title: 'Transaction restored',
             message:
                 '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
                 '₹${transaction.amount.toStringAsFixed(2)}',
           );
 
-          ScaffoldMessenger.of(context)
-              .showSnackBar(
+          unawaited(sheetsSyncCoordinator.requestSync());
+
+          ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text(
-                'Transaction restored',
-              ),
+              content: Text('Transaction restored'),
+              duration: Duration(seconds: 5),
+              persist: false,
             ),
           );
         },
