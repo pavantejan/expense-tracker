@@ -482,3 +482,74 @@ reconciliation — neither is claimed, and neither happens.
    lives only in old spreadsheets, stays where it is
    until the manual or future-import path in point 5 is
    used.
+
+## Verification — results on the pushed commit (round 4, 31 Oct 2026)
+
+This section describes the checks run on the exact tree in
+the commit that carries this section. It supersedes the
+earlier local results in the "Verification — Flutter
+checks actually run" section above, which described an
+earlier local state: a 6-file-only format run, a first
+analyze run that found the `_client` compile error, and
+test runs before the full 12-file formatting below. Do
+not quote the earlier section as the state of the pushed
+commit.
+
+Correction to an earlier claim in these notes:
+`lib/core/sync/google_drive_service.dart` WAS modified
+by this PR (doc comment on `drive.file` discovery limits
+plus `allowInteractiveAuthorization` plumbing through
+`_getDriveApi` / `setupExpenseTracker`). It is the 12th
+Dart file in the PR, not "reused unchanged". The full
+PR Dart set is 12 live files (plus the deleted
+`google_sheets_service.dart`): google_auth_service,
+sheets_sync, google_sheets_backend, sync_coordinator,
+google_drive_service, transaction_repository,
+add_transaction_page, dashboard_page,
+all_transactions_page, settings_page, main,
+sheets_sync_test.
+
+Toolchain: Flutter 3.47.2 / Dart 3.13.2
+(`~/workspace/build-verify/flutter/`). `flutter pub get`
+succeeded (exit 0, `pubspec.lock` unchanged).
+
+- `dart format` — check run over all 12 PR Dart files:
+  7 already clean; 5 reformatted (semantics-preserving,
+  mostly pre-existing master regions — this codebase was
+  never formatted): transaction_repository (140 changed
+  lines), add_transaction_page (192), dashboard_page
+  (435), all_transactions_page (56), google_drive_service
+  (44). Re-check after formatting: "Formatted 12 files
+  (0 changed)".
+- `flutter analyze` — exit code 1, "5 issues found":
+  0 errors, 0 warnings, 5 infos only (initializing-formal
+  patterns and one `use_build_context_synchronously` in
+  Settings). The `_client` field/method collision found
+  in the earlier local run is fixed in this commit
+  (field renamed to `_cachedClient`, `_client()` method
+  kept), so the pushed code compiles under analysis.
+- `flutter test test/sheets_sync_test.dart` — exit 0,
+  44/44 passed ("All tests passed!").
+- Full `flutter test` — exit 1: 44 passed, 1 failed.
+  The failure is `test/widget_test.dart`, "Expense
+  Tracker app loads": "A Timer is still pending even
+  after the widget tree was disposed", with the timer
+  created by `drift_flutter` (`driftDatabase`) while the
+  dashboard builds.
+- Widget test on the base commit (master `2231948`,
+  checked out separately and run with the same
+  toolchain): exit 1, the same test fails with the same
+  signature ("A Timer is still pending...", stack through
+  `drift_flutter`/`driftDatabase`). The failure is
+  therefore pre-existing on master and is NOT introduced
+  by this PR. It was established by running the test,
+  not assumed.
+- `flutter build apk --debug` — exit 1, NOT completed:
+  "[!] No Android SDK found", even with `ANDROID_HOME`
+  set to the SDK directory present here, which contains
+  only cmdline-tools (no platforms, platform-tools, or
+  build-tools), and no JDK is installed (`which java`
+  empty, no `/usr/lib/jvm`, `JAVA_HOME` empty).
+  `flutter doctor` likewise reports "Unable to locate
+  Android SDK." No APK or build pass is claimed; the
+  build needs a machine with a valid Android SDK/JDK.

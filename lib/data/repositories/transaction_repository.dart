@@ -12,24 +12,17 @@ class TransactionRepository {
           ..where((t) => t.deleted.equals(false))
           ..orderBy([
             (t) => OrderingTerm(
-                  expression: t.transactionDate,
-                  mode: OrderingMode.desc,
-                ),
+              expression: t.transactionDate,
+              mode: OrderingMode.desc,
+            ),
           ]))
         .watch();
   }
-  Stream<List<Transaction>> watchTransactionsForMonth(
-    DateTime month,
-  ) {
-    final start = DateTime(
-      month.year,
-      month.month,
-    );
 
-    final end = DateTime(
-      month.year,
-      month.month + 1,
-    );
+  Stream<List<Transaction>> watchTransactionsForMonth(DateTime month) {
+    final start = DateTime(month.year, month.month);
+
+    final end = DateTime(month.year, month.month + 1);
 
     return (_database.select(_database.transactions)
           ..where(
@@ -40,16 +33,14 @@ class TransactionRepository {
           )
           ..orderBy([
             (t) => OrderingTerm(
-                  expression: t.transactionDate,
-                  mode: OrderingMode.desc,
-                ),
+              expression: t.transactionDate,
+              mode: OrderingMode.desc,
+            ),
           ]))
         .watch();
   }
 
-  Stream<List<Transaction>> watchTransactionsForYear(
-    int year,
-  ) {
+  Stream<List<Transaction>> watchTransactionsForYear(int year) {
     final start = DateTime(year);
     final end = DateTime(year + 1);
 
@@ -62,13 +53,13 @@ class TransactionRepository {
           )
           ..orderBy([
             (t) => OrderingTerm(
-                  expression: t.transactionDate,
-                  mode: OrderingMode.desc,
-                ),
+              expression: t.transactionDate,
+              mode: OrderingMode.desc,
+            ),
           ]))
         .watch();
   }
-  
+
   Future<double> getBalanceBeforeMonth(
     DateTime month,
     DateTime? openingBalanceDate,
@@ -77,10 +68,7 @@ class TransactionRepository {
       return 0;
     }
 
-    final startOfMonth = DateTime(
-      month.year,
-      month.month,
-    );
+    final startOfMonth = DateTime(month.year, month.month);
 
     final startOfOpeningMonth = DateTime(
       openingBalanceDate.year,
@@ -91,27 +79,22 @@ class TransactionRepository {
       return 0;
     }
 
-    final transactions = await (_database.select(_database.transactions)
-          ..where(
-            (t) =>
-                t.deleted.equals(false) &
-                t.transactionDate.isBiggerOrEqualValue(
-                  startOfOpeningMonth,
-                ) &
-                t.transactionDate.isSmallerThanValue(startOfMonth),
-          ))
-        .get();
+    final transactions =
+        await (_database.select(_database.transactions)..where(
+              (t) =>
+                  t.deleted.equals(false) &
+                  t.transactionDate.isBiggerOrEqualValue(startOfOpeningMonth) &
+                  t.transactionDate.isSmallerThanValue(startOfMonth),
+            ))
+            .get();
 
-    return transactions.fold<double>(
-      0,
-      (balance, transaction) {
-        if (transaction.type == 'Income') {
-          return balance + transaction.amount;
-        }
+    return transactions.fold<double>(0, (balance, transaction) {
+      if (transaction.type == 'Income') {
+        return balance + transaction.amount;
+      }
 
-        return balance - transaction.amount;
-      },
-    );
+      return balance - transaction.amount;
+    });
   }
 
   Stream<List<Transaction>> searchTransactions(String query) {
@@ -128,9 +111,9 @@ class TransactionRepository {
           )
           ..orderBy([
             (t) => OrderingTerm(
-                  expression: t.transactionDate,
-                  mode: OrderingMode.desc,
-                ),
+              expression: t.transactionDate,
+              mode: OrderingMode.desc,
+            ),
           ]))
         .watch();
   }
@@ -173,9 +156,9 @@ class TransactionRepository {
       syncStatus: const Value('pending'),
     );
 
-    final count = await (_database.update(_database.transactions)
-          ..where((t) => t.id.equals(id)))
-        .write(updatedTransaction);
+    final count = await (_database.update(
+      _database.transactions,
+    )..where((t) => t.id.equals(id))).write(updatedTransaction);
     return count > 0;
   }
 
@@ -185,9 +168,10 @@ class TransactionRepository {
       return false;
     }
 
-    final count = await (_database.update(_database.transactions)
-          ..where((t) => t.id.equals(id)))
-        .write(
+    final count =
+        await (_database.update(
+          _database.transactions,
+        )..where((t) => t.id.equals(id))).write(
           TransactionsCompanion(
             deleted: const Value(true),
             updatedAt: Value(_nextUpdatedAt(existing.updatedAt)),
@@ -203,9 +187,10 @@ class TransactionRepository {
       return false;
     }
 
-    final count = await (_database.update(_database.transactions)
-          ..where((t) => t.id.equals(id)))
-        .write(
+    final count =
+        await (_database.update(
+          _database.transactions,
+        )..where((t) => t.id.equals(id))).write(
           TransactionsCompanion(
             deleted: const Value(false),
             updatedAt: Value(_nextUpdatedAt(existing.updatedAt)),
@@ -216,9 +201,9 @@ class TransactionRepository {
   }
 
   Future<Transaction?> getTransactionById(int id) {
-    return (_database.select(_database.transactions)
-          ..where((t) => t.id.equals(id)))
-        .getSingleOrNull();
+    return (_database.select(
+      _database.transactions,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
   }
 
   /// All rows awaiting Sheets synchronization, including soft-deleted
@@ -228,11 +213,7 @@ class TransactionRepository {
   Future<List<Transaction>> getPendingTransactions() {
     return (_database.select(_database.transactions)
           ..where((t) => t.syncStatus.equals('pending'))
-          ..orderBy([
-            (t) => OrderingTerm(
-                  expression: t.updatedAt,
-                ),
-          ]))
+          ..orderBy([(t) => OrderingTerm(expression: t.updatedAt)]))
         .get();
   }
 
@@ -249,19 +230,14 @@ class TransactionRepository {
     required DateTime updatedAt,
     required bool deleted,
   }) {
-    return (_database.update(_database.transactions)
-          ..where(
-            (t) =>
-                t.id.equals(id) &
-                t.updatedAt.equals(updatedAt) &
-                t.deleted.equals(deleted) &
-                t.syncStatus.equals('pending'),
-          ))
-        .write(
-          const TransactionsCompanion(
-            syncStatus: Value('synced'),
-          ),
-        )
+    return (_database.update(_database.transactions)..where(
+          (t) =>
+              t.id.equals(id) &
+              t.updatedAt.equals(updatedAt) &
+              t.deleted.equals(deleted) &
+              t.syncStatus.equals('pending'),
+        ))
+        .write(const TransactionsCompanion(syncStatus: Value('synced')))
         .then((count) => count > 0);
   }
 }

@@ -82,11 +82,12 @@ class SheetsSyncCoordinator {
       required NotificationType type,
       required String title,
       required String message,
-    })? onNotification,
-  })  : _backend = backend,
-        _store = store,
-        _engine = engine ?? SheetsSyncEngine(),
-        _onNotification = onNotification;
+    })?
+    onNotification,
+  }) : _backend = backend,
+       _store = store,
+       _engine = engine ?? SheetsSyncEngine(),
+       _onNotification = onNotification;
 
   final SheetsSyncBackend _backend;
   final SyncTransactionStore _store;
@@ -95,7 +96,8 @@ class SheetsSyncCoordinator {
     required NotificationType type,
     required String title,
     required String message,
-  })? _onNotification;
+  })?
+  _onNotification;
 
   void _notify({
     required NotificationType type,
@@ -251,8 +253,7 @@ class SheetsSyncCoordinator {
         _notify(
           type: NotificationType.syncFailed,
           title: 'Google Sheets authorization needed',
-          message:
-              'Open Settings to authorize Google Sheets backup. Transactions are saved locally.',
+          message: 'Open Settings to authorize Google Sheets backup. Transactions are saved locally.',
         );
       }
       return false;

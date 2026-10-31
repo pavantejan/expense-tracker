@@ -11,10 +11,7 @@ import '../../data/notifications/notification.dart';
 import 'add_transaction_page.dart';
 
 class AllTransactionsPage extends StatefulWidget {
-  const AllTransactionsPage({
-    super.key,
-    this.autoFocusSearch = false,
-  });
+  const AllTransactionsPage({super.key, this.autoFocusSearch = false});
 
   final bool autoFocusSearch;
 
@@ -111,8 +108,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
         action: SnackBarAction(
           label: 'UNDO',
           onPressed: () async {
-            final restored =
-                await transactionRepository.restoreTransaction(
+            final restored = await transactionRepository.restoreTransaction(
               transaction.id,
             );
 
@@ -129,9 +125,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
             unawaited(sheetsSyncCoordinator.requestSync());
 
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Transaction restored'),
-              ),
+              const SnackBar(content: Text('Transaction restored')),
             );
           },
         ),
@@ -153,9 +147,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
         ),
         title: const Text(
           'All Transactions',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
       ),
       body: SafeArea(
@@ -197,9 +189,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
               child: StreamBuilder<List<Transaction>>(
                 stream: _searchQuery.isEmpty
                     ? transactionRepository.watchAllTransactions()
-                    : transactionRepository.searchTransactions(
-                        _searchQuery,
-                      ),
+                    : transactionRepository.searchTransactions(_searchQuery),
                 builder: (context, snapshot) {
                   final transactions = snapshot.data ?? [];
 
@@ -210,15 +200,9 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
                   }
 
                   return ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(
-                      16,
-                      0,
-                      16,
-                      16,
-                    ),
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                     itemCount: transactions.length,
-                    separatorBuilder: (_, _) =>
-                        const SizedBox(height: 8),
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
                       final transaction = transactions[index];
 
@@ -229,9 +213,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
                           alignment: Alignment.centerRight,
                           padding: const EdgeInsets.only(right: 24),
                           decoration: BoxDecoration(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .errorContainer,
+                            color: Theme.of(context).colorScheme.errorContainer,
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: Icon(
@@ -271,10 +253,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
 }
 
 class _AllTransactionCard extends StatelessWidget {
-  const _AllTransactionCard({
-    required this.transaction,
-    required this.onTap,
-  });
+  const _AllTransactionCard({required this.transaction, required this.onTap});
 
   final Transaction transaction;
   final VoidCallback onTap;
@@ -303,12 +282,7 @@ class _AllTransactionCard extends StatelessWidget {
                 : _categoryIcon(transaction.category),
           ),
         ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(
           '${transaction.category} • '
           '${transaction.paymentMethod}\n'
@@ -341,9 +315,7 @@ class _AllTransactionCard extends StatelessWidget {
 }
 
 class _EmptyTransactionsView extends StatelessWidget {
-  const _EmptyTransactionsView({
-    required this.isSearching,
-  });
+  const _EmptyTransactionsView({required this.isSearching});
 
   final bool isSearching;
 
@@ -366,9 +338,7 @@ class _EmptyTransactionsView extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              isSearching
-                  ? 'No transactions found'
-                  : 'No transactions yet',
+              isSearching ? 'No transactions found' : 'No transactions yet',
               style: theme.textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.bold,
               ),

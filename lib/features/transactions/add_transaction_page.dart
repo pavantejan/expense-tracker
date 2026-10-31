@@ -14,22 +14,17 @@ import '../../core/categories/category.dart';
 import '../../core/sync/sync_coordinator.dart';
 
 class AddTransactionPage extends StatefulWidget {
-  const AddTransactionPage({
-    super.key,
-    this.transactionId,
-  });
+  const AddTransactionPage({super.key, this.transactionId});
 
   final int? transactionId;
 
   bool get isEditMode => transactionId != null;
 
   @override
-  State<AddTransactionPage> createState() =>
-      _AddTransactionPageState();
+  State<AddTransactionPage> createState() => _AddTransactionPageState();
 }
 
-class _AddTransactionPageState
-    extends State<AddTransactionPage> {
+class _AddTransactionPageState extends State<AddTransactionPage> {
   String _type = 'Expense';
   String _category = 'Food';
   String _paymentMethod = 'UPI';
@@ -43,12 +38,7 @@ class _AddTransactionPageState
 
   bool _isSaving = false;
 
-  final _paymentMethods = [
-    'UPI',
-    'Cash',
-    'Card',
-    'Bank Transfer',
-  ];
+  final _paymentMethods = ['UPI', 'Cash', 'Card', 'Bank Transfer'];
 
   @override
   void initState() {
@@ -72,8 +62,7 @@ class _AddTransactionPageState
   // ============================================================
 
   Future<void> _loadTransaction(int id) async {
-    final transaction =
-        await transactionRepository.getTransactionById(id);
+    final transaction = await transactionRepository.getTransactionById(id);
 
     if (!mounted || transaction == null) {
       return;
@@ -90,14 +79,11 @@ class _AddTransactionPageState
         transaction.transactionDate.day,
       );
 
-      _amountController.text =
-          transaction.amount.toString();
+      _amountController.text = transaction.amount.toString();
 
-      _descriptionController.text =
-          transaction.description ?? '';
+      _descriptionController.text = transaction.description ?? '';
 
-      _notesController.text =
-          transaction.notes ?? '';
+      _notesController.text = transaction.notes ?? '';
     });
   }
 
@@ -115,11 +101,7 @@ class _AddTransactionPageState
 
     if (picked != null) {
       setState(() {
-        _selectedDate = DateTime(
-          picked.year,
-          picked.month,
-          picked.day,
-        );
+        _selectedDate = DateTime(picked.year, picked.month, picked.day);
       });
     }
   }
@@ -133,28 +115,19 @@ class _AddTransactionPageState
       return;
     }
 
-    final amount =
-        double.tryParse(
-          _amountController.text.trim(),
-        );
+    final amount = double.tryParse(_amountController.text.trim());
 
     if (amount == null || amount <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please enter a valid amount.',
-          ),
-        ),
+        const SnackBar(content: Text('Please enter a valid amount.')),
       );
 
       return;
     }
 
-    final description =
-        _descriptionController.text.trim();
+    final description = _descriptionController.text.trim();
 
-    final notes =
-        _notesController.text.trim();
+    final notes = _notesController.text.trim();
 
     final now = DateTime.now();
 
@@ -174,18 +147,10 @@ class _AddTransactionPageState
             type: _type,
             amount: amount,
             category: _category,
-            description: Value(
-              description.isEmpty
-                  ? null
-                  : description,
-            ),
+            description: Value(description.isEmpty ? null : description),
             paymentMethod: _paymentMethod,
             transactionDate: _selectedDate,
-            notes: Value(
-              notes.isEmpty
-                  ? null
-                  : notes,
-            ),
+            notes: Value(notes.isEmpty ? null : notes),
             createdAt: now,
             updatedAt: now,
             syncStatus: 'pending',
@@ -210,18 +175,12 @@ class _AddTransactionPageState
         }
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Transaction saved locally.',
-            ),
-          ),
+          const SnackBar(content: Text('Transaction saved locally.')),
         );
       }
-
       // ========================================================
       // EDIT EXISTING TRANSACTION
       // ========================================================
-
       else {
         await transactionRepository.updateTransaction(
           widget.transactionId!,
@@ -229,22 +188,10 @@ class _AddTransactionPageState
             type: Value(_type),
             amount: Value(amount),
             category: Value(_category),
-            description: Value(
-              description.isEmpty
-                  ? null
-                  : description,
-            ),
-            paymentMethod: Value(
-              _paymentMethod,
-            ),
-            transactionDate: Value(
-              _selectedDate,
-            ),
-            notes: Value(
-              notes.isEmpty
-                  ? null
-                  : notes,
-            ),
+            description: Value(description.isEmpty ? null : description),
+            paymentMethod: Value(_paymentMethod),
+            transactionDate: Value(_selectedDate),
+            notes: Value(notes.isEmpty ? null : notes),
           ),
         );
 
@@ -261,11 +208,7 @@ class _AddTransactionPageState
         }
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Transaction updated locally.',
-            ),
-          ),
+          const SnackBar(content: Text('Transaction updated locally.')),
         );
       }
 
@@ -295,11 +238,7 @@ class _AddTransactionPageState
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          widget.isEditMode
-              ? 'Edit Transaction'
-              : 'Add Transaction',
-        ),
+        title: Text(widget.isEditMode ? 'Edit Transaction' : 'Add Transaction'),
       ),
       body: SafeArea(
         child: ListView(
@@ -314,16 +253,12 @@ class _AddTransactionPageState
                 ButtonSegment<String>(
                   value: 'Expense',
                   label: Text('Expense'),
-                  icon: Icon(
-                    Icons.arrow_upward_rounded,
-                  ),
+                  icon: Icon(Icons.arrow_upward_rounded),
                 ),
                 ButtonSegment<String>(
                   value: 'Income',
                   label: Text('Income'),
-                  icon: Icon(
-                    Icons.arrow_downward_rounded,
-                  ),
+                  icon: Icon(Icons.arrow_downward_rounded),
                 ),
               ],
               selected: {_type},
@@ -331,8 +266,7 @@ class _AddTransactionPageState
                   ? null
                   : (selection) {
                       setState(() {
-                        _type =
-                            selection.first;
+                        _type = selection.first;
                       });
                     },
             ),
@@ -342,16 +276,13 @@ class _AddTransactionPageState
             // ==================================================
             // AMOUNT
             // ==================================================
-
             TextField(
               controller: _amountController,
               enabled: !_isSaving,
-              keyboardType:
-                  const TextInputType.numberWithOptions(
+              keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration:
-                  const InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Amount',
                 prefixText: '₹ ',
                 border: OutlineInputBorder(),
@@ -363,28 +294,20 @@ class _AddTransactionPageState
             // ==================================================
             // CATEGORY
             // ==================================================
-
             DropdownButtonFormField<String>(
               initialValue: _category,
-              decoration:
-                  const InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Category',
                 border: OutlineInputBorder(),
               ),
               items: expenseCategories
                   .map(
-                    (category) =>
-                        DropdownMenuItem(
+                    (category) => DropdownMenuItem(
                       value: category.name,
                       child: Row(
                         children: [
-                          Icon(
-                            category.icon,
-                            size: 20,
-                          ),
-                          const SizedBox(
-                            width: 12,
-                          ),
+                          Icon(category.icon, size: 20),
+                          const SizedBox(width: 12),
                           Text(category.name),
                         ],
                       ),
@@ -407,21 +330,16 @@ class _AddTransactionPageState
             // ==================================================
             // PAYMENT METHOD
             // ==================================================
-
             DropdownButtonFormField<String>(
               initialValue: _paymentMethod,
-              decoration:
-                  const InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Payment Method',
                 border: OutlineInputBorder(),
               ),
               items: _paymentMethods
                   .map(
                     (method) =>
-                        DropdownMenuItem(
-                      value: method,
-                      child: Text(method),
-                    ),
+                        DropdownMenuItem(value: method, child: Text(method)),
                   )
                   .toList(),
               onChanged: _isSaving
@@ -429,8 +347,7 @@ class _AddTransactionPageState
                   : (value) {
                       if (value != null) {
                         setState(() {
-                          _paymentMethod =
-                              value;
+                          _paymentMethod = value;
                         });
                       }
                     },
@@ -441,13 +358,10 @@ class _AddTransactionPageState
             // ==================================================
             // DESCRIPTION
             // ==================================================
-
             TextField(
-              controller:
-                  _descriptionController,
+              controller: _descriptionController,
               enabled: !_isSaving,
-              decoration:
-                  const InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Description',
                 border: OutlineInputBorder(),
               ),
@@ -458,13 +372,9 @@ class _AddTransactionPageState
             // ==================================================
             // DATE
             // ==================================================
-
             ListTile(
-              contentPadding:
-                  EdgeInsets.zero,
-              leading: const Icon(
-                Icons.calendar_today_outlined,
-              ),
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.calendar_today_outlined),
               title: const Text('Date'),
               subtitle: Text(
                 '${_selectedDate.day.toString().padLeft(2, '0')}/'
@@ -472,10 +382,7 @@ class _AddTransactionPageState
                 '${_selectedDate.year}',
               ),
               trailing: TextButton(
-                onPressed:
-                    _isSaving
-                        ? null
-                        : _selectDate,
+                onPressed: _isSaving ? null : _selectDate,
                 child: const Text('Change'),
               ),
             ),
@@ -485,13 +392,11 @@ class _AddTransactionPageState
             // ==================================================
             // NOTES
             // ==================================================
-
             TextField(
               controller: _notesController,
               enabled: !_isSaving,
               maxLines: 3,
-              decoration:
-                  const InputDecoration(
+              decoration: const InputDecoration(
                 labelText: 'Notes',
                 border: OutlineInputBorder(),
               ),
@@ -502,22 +407,15 @@ class _AddTransactionPageState
             // ==================================================
             // SAVE BUTTON
             // ==================================================
-
             SizedBox(
               height: 52,
               child: FilledButton.icon(
-                onPressed:
-                    _isSaving
-                        ? null
-                        : _saveTransaction,
+                onPressed: _isSaving ? null : _saveTransaction,
                 icon: _isSaving
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child:
-                            CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
+                        child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : Icon(
                         widget.isEditMode
@@ -528,8 +426,8 @@ class _AddTransactionPageState
                   _isSaving
                       ? 'Saving...'
                       : widget.isEditMode
-                          ? 'Update Transaction'
-                          : 'Save Transaction',
+                      ? 'Update Transaction'
+                      : 'Save Transaction',
                 ),
               ),
             ),

@@ -50,8 +50,7 @@ class GoogleDriveSetupResult {
 class GoogleDriveService {
   GoogleDriveService._();
 
-  static final GoogleDriveService instance =
-      GoogleDriveService._();
+  static final GoogleDriveService instance = GoogleDriveService._();
 
   static const String _folderName = 'Expense Tracker';
 
@@ -75,37 +74,28 @@ class GoogleDriveService {
       allowInteractiveAuthorization: allowInteractiveAuthorization,
     );
 
-    final folder =
-        await _findOrCreateExpenseTrackerFolder(api);
+    final folder = await _findOrCreateExpenseTrackerFolder(api);
 
     final folderId = folder.id;
 
     if (folderId == null || folderId.isEmpty) {
-      throw StateError(
-        'Expense Tracker folder could not be created.',
-      );
+      throw StateError('Expense Tracker folder could not be created.');
     }
 
     final spreadsheet =
         await _findSpreadsheet(api, folderId) ??
-            await _createSpreadsheet(
-              api,
-              folderId,
-            );
+        await _createSpreadsheet(api, folderId);
 
     final spreadsheetId = spreadsheet.id;
 
     if (spreadsheetId == null || spreadsheetId.isEmpty) {
-      throw StateError(
-        'Expense Tracker Google Sheet could not be created.',
-      );
+      throw StateError('Expense Tracker Google Sheet could not be created.');
     }
 
     return GoogleDriveSetupResult(
       folderId: folderId,
       fileId: spreadsheetId,
-      fileName:
-          spreadsheet.name ?? _spreadsheetName,
+      fileName: spreadsheet.name ?? _spreadsheetName,
       webViewLink: spreadsheet.webViewLink,
     );
   }
@@ -114,7 +104,8 @@ class GoogleDriveService {
     drive.DriveApi api,
   ) async {
     final result = await api.files.list(
-      q: "name = '$_folderName' "
+      q:
+          "name = '$_folderName' "
           "and mimeType = "
           "'application/vnd.google-apps.folder' "
           "and trashed = false",
@@ -134,13 +125,9 @@ class GoogleDriveService {
 
     final metadata = drive.File()
       ..name = _folderName
-      ..mimeType =
-          'application/vnd.google-apps.folder';
+      ..mimeType = 'application/vnd.google-apps.folder';
 
-    return api.files.create(
-      metadata,
-      $fields: 'id,name,mimeType,webViewLink',
-    );
+    return api.files.create(metadata, $fields: 'id,name,mimeType,webViewLink');
   }
 
   Future<drive.File?> _findSpreadsheet(
@@ -148,13 +135,13 @@ class GoogleDriveService {
     String folderId,
   ) async {
     final result = await api.files.list(
-      q: "'$folderId' in parents "
+      q:
+          "'$folderId' in parents "
           "and name = '$_spreadsheetName' "
           "and mimeType = '$_spreadsheetMimeType' "
           "and trashed = false",
       spaces: 'drive',
-      $fields:
-          'files(id,name,mimeType,webViewLink,parents)',
+      $fields: 'files(id,name,mimeType,webViewLink,parents)',
       pageSize: 10,
     );
 
@@ -181,8 +168,7 @@ class GoogleDriveService {
 
     return api.files.create(
       metadata,
-      $fields:
-          'id,name,mimeType,webViewLink,parents',
+      $fields: 'id,name,mimeType,webViewLink,parents',
     );
   }
 }

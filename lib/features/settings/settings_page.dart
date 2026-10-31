@@ -14,8 +14,7 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  final GoogleAuthService _googleAuthService =
-      GoogleAuthService.instance;
+  final GoogleAuthService _googleAuthService = GoogleAuthService.instance;
 
   bool _isLoading = false;
   bool _isDriveSettingUp = false;
@@ -42,8 +41,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
       return;
     }
-    final hasAuthorization =
-        await _googleAuthService.hasSyncAuthorization();
+    final hasAuthorization = await _googleAuthService.hasSyncAuthorization();
     if (!mounted) {
       return;
     }
@@ -66,11 +64,7 @@ class _SettingsPageState extends State<SettingsPage> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Google Sheets backup authorized.',
-          ),
-        ),
+        const SnackBar(content: Text('Google Sheets backup authorized.')),
       );
       unawaited(sheetsSyncCoordinator.syncNow());
     } catch (_) {
@@ -93,8 +87,7 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  String? get _userEmail =>
-      _googleAuthService.currentUser?.email;
+  String? get _userEmail => _googleAuthService.currentUser?.email;
 
   // ============================================================
   // GOOGLE SIGN IN
@@ -129,11 +122,7 @@ class _SettingsPageState extends State<SettingsPage> {
       await _refreshAuthorizationStatus();
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Google account connected successfully.',
-          ),
-        ),
+        const SnackBar(content: Text('Google account connected successfully.')),
       );
 
       // Pending local changes can now sync in the background.
@@ -146,13 +135,9 @@ class _SettingsPageState extends State<SettingsPage> {
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Google sign-in failed: $error',
-          ),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Google sign-in failed: $error')));
     } finally {
       if (mounted) {
         setState(() {
@@ -183,24 +168,16 @@ class _SettingsPageState extends State<SettingsPage> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Google account disconnected.',
-          ),
-        ),
+        const SnackBar(content: Text('Google account disconnected.')),
       );
     } catch (error) {
       if (!mounted) {
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Google sign-out failed: $error',
-          ),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Google sign-out failed: $error')));
     } finally {
       if (mounted) {
         setState(() {
@@ -223,11 +200,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _createGoogleSheet() async {
     if (_userEmail == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please sign in with Google first.',
-          ),
-        ),
+        const SnackBar(content: Text('Please sign in with Google first.')),
       );
 
       return;
@@ -238,8 +211,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      final spreadsheetId = await GoogleSheetsBackend
-          .interactiveInstance
+      final spreadsheetId = await GoogleSheetsBackend.interactiveInstance
           .resolveSpreadsheetId();
       await GoogleSheetsBackend.interactiveInstance.ensureYearSheet(
         spreadsheetId,
@@ -252,9 +224,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Expense Tracker Google Sheet is ready for backup.',
-          ),
+          content: Text('Expense Tracker Google Sheet is ready for backup.'),
         ),
       );
     } catch (error) {
@@ -263,11 +233,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Google Sheet setup failed: $error',
-          ),
-        ),
+        SnackBar(content: Text('Google Sheet setup failed: $error')),
       );
     } finally {
       if (mounted) {
@@ -281,11 +247,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _retrySync() async {
     if (_userEmail == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Please sign in with Google first.',
-          ),
-        ),
+        const SnackBar(content: Text('Please sign in with Google first.')),
       );
       return;
     }
@@ -315,9 +277,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final email = _userEmail;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-      ),
+      appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -338,34 +298,26 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
                       const CircleAvatar(
-                        child: Icon(
-                          Icons.account_circle_rounded,
-                        ),
+                        child: Icon(Icons.account_circle_rounded),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
                               'Google Account',
-                              style: TextStyle(
-                                fontWeight:
-                                    FontWeight.w600,
-                              ),
+                              style: TextStyle(fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               email ?? 'Not connected',
-                              style:
-                                  theme.textTheme.bodyMedium,
+                              style: theme.textTheme.bodyMedium,
                             ),
                             if (email == null) ...[
                               const SizedBox(height: 4),
@@ -389,21 +341,16 @@ class _SettingsPageState extends State<SettingsPage> {
                     width: double.infinity,
                     child: email == null
                         ? FilledButton.icon(
-                            onPressed: _isLoading
-                                ? null
-                                : _signInWithGoogle,
+                            onPressed: _isLoading ? null : _signInWithGoogle,
                             icon: _isLoading
                                 ? const SizedBox(
                                     width: 18,
                                     height: 18,
-                                    child:
-                                        CircularProgressIndicator(
+                                    child: CircularProgressIndicator(
                                       strokeWidth: 2,
                                     ),
                                   )
-                                : const Icon(
-                                    Icons.login_rounded,
-                                  ),
+                                : const Icon(Icons.login_rounded),
                             label: Text(
                               _isLoading
                                   ? 'Signing in...'
@@ -411,25 +358,18 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           )
                         : OutlinedButton.icon(
-                            onPressed: _isLoading
-                                ? null
-                                : _signOutFromGoogle,
+                            onPressed: _isLoading ? null : _signOutFromGoogle,
                             icon: _isLoading
                                 ? const SizedBox(
                                     width: 18,
                                     height: 18,
-                                    child:
-                                        CircularProgressIndicator(
+                                    child: CircularProgressIndicator(
                                       strokeWidth: 2,
                                     ),
                                   )
-                                : const Icon(
-                                    Icons.logout_rounded,
-                                  ),
+                                : const Icon(Icons.logout_rounded),
                             label: Text(
-                              _isLoading
-                                  ? 'Signing out...'
-                                  : 'Sign out',
+                              _isLoading ? 'Signing out...' : 'Sign out',
                             ),
                           ),
                   ),
@@ -441,7 +381,6 @@ class _SettingsPageState extends State<SettingsPage> {
           // ======================================================
           // GOOGLE SHEETS
           // ======================================================
-
           const SizedBox(height: 24),
 
           Text(
@@ -457,28 +396,19 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Row(
                     children: [
-                      CircleAvatar(
-                        child: Icon(
-                          Icons.table_chart_outlined,
-                        ),
-                      ),
+                      CircleAvatar(child: Icon(Icons.table_chart_outlined)),
                       SizedBox(width: 12),
                       Expanded(
                         child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               'Expense Tracker Sheet',
-                              style: TextStyle(
-                                fontWeight:
-                                    FontWeight.w600,
-                              ),
+                              style: TextStyle(fontWeight: FontWeight.w600),
                             ),
                             SizedBox(height: 4),
                             Text(
@@ -495,23 +425,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed:
-                          email == null ||
-                                  _isDriveSettingUp
-                              ? null
-                              : _createGoogleSheet,
+                      onPressed: email == null || _isDriveSettingUp
+                          ? null
+                          : _createGoogleSheet,
                       icon: _isDriveSettingUp
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child:
-                                  CircularProgressIndicator(
-                                strokeWidth: 2,
-                              ),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(
-                              Icons.add_chart_rounded,
-                            ),
+                          : const Icon(Icons.add_chart_rounded),
                       label: Text(
                         _isDriveSettingUp
                             ? 'Creating Sheet...'
@@ -527,7 +450,6 @@ class _SettingsPageState extends State<SettingsPage> {
           // ======================================================
           // SYNC
           // ======================================================
-
           const SizedBox(height: 24),
 
           Text(
@@ -547,22 +469,15 @@ class _SettingsPageState extends State<SettingsPage> {
                 children: [
                   const Row(
                     children: [
-                      CircleAvatar(
-                        child: Icon(
-                          Icons.sync_rounded,
-                        ),
-                      ),
+                      CircleAvatar(child: Icon(Icons.sync_rounded)),
                       SizedBox(width: 12),
                       Expanded(
                         child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               'Pending backup',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                              ),
+                              style: TextStyle(fontWeight: FontWeight.w600),
                             ),
                             SizedBox(height: 4),
                             Text(
@@ -584,32 +499,26 @@ class _SettingsPageState extends State<SettingsPage> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: email == null ||
-                              _isSyncing ||
-                              _isAuthorizing
+                      onPressed: email == null || _isSyncing || _isAuthorizing
                           ? null
                           : (_authorizationMissing == true
-                              ? _authorizeForSync
-                              : _retrySync),
+                                ? _authorizeForSync
+                                : _retrySync),
                       icon: _isSyncing || _isAuthorizing
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                              ),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(
-                              Icons.sync_rounded,
-                            ),
+                          : const Icon(Icons.sync_rounded),
                       label: Text(
                         _isAuthorizing
                             ? 'Authorizing...'
                             : _isSyncing
-                                ? 'Syncing...'
-                                : _authorizationMissing == true
-                                    ? 'Authorize Google Sheets'
-                                    : 'Retry sync now',
+                            ? 'Syncing...'
+                            : _authorizationMissing == true
+                            ? 'Authorize Google Sheets'
+                            : 'Retry sync now',
                       ),
                     ),
                   ),
@@ -621,7 +530,6 @@ class _SettingsPageState extends State<SettingsPage> {
           // ======================================================
           // APP
           // ======================================================
-
           const SizedBox(height: 24),
 
           Text(
@@ -636,19 +544,13 @@ class _SettingsPageState extends State<SettingsPage> {
           Card(
             child: ListTile(
               leading: const CircleAvatar(
-                child: Icon(
-                  Icons.info_outline_rounded,
-                ),
+                child: Icon(Icons.info_outline_rounded),
               ),
               title: const Text(
                 'Expense Tracker',
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
-              subtitle: const Text(
-                'Personal expense and income tracker',
-              ),
+              subtitle: const Text('Personal expense and income tracker'),
             ),
           ),
         ],

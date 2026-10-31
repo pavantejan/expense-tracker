@@ -112,10 +112,7 @@ abstract class SheetsApiClient {
   /// Throws [SheetsApiException] with
   /// [SheetsErrorKind.missingWorksheet] when the worksheet/range
   /// does not exist in an otherwise verified spreadsheet.
-  Future<List<List<Object?>>> readValues(
-    String spreadsheetId,
-    String range,
-  );
+  Future<List<List<Object?>>> readValues(String spreadsheetId, String range);
 
   Future<void> updateValues(
     String spreadsheetId,
@@ -204,10 +201,7 @@ class GoogleApisSheetsClient implements SheetsApiClient {
   ) async {
     try {
       final api = await _api();
-      final response = await api.spreadsheets.values.get(
-        spreadsheetId,
-        range,
-      );
+      final response = await api.spreadsheets.values.get(spreadsheetId, range);
       return response.values ?? const <List<Object?>>[];
     } catch (error) {
       if (error is SheetsNotSignedInException ||
@@ -327,11 +321,8 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
   GoogleSheetsBackend.forTesting({
     required SheetsApiClient client,
     this.interactive = false,
-  })  : _clientFactory = (({
-          required bool interactive,
-        }) =>
-            client),
-        _client = client;
+  }) : _clientFactory = (({required bool interactive}) => client),
+       _cachedClient = client;
 
   /// Test constructor: injects a client factory directly, so
   /// tests can record the authorization mode a backend requests
@@ -341,11 +332,13 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
     required SheetsApiClientFactory clientFactory,
   }) : _clientFactory = clientFactory;
 
-  static final GoogleSheetsBackend instance =
-      GoogleSheetsBackend._(interactive: false);
+  static final GoogleSheetsBackend instance = GoogleSheetsBackend._(
+    interactive: false,
+  );
 
-  static final GoogleSheetsBackend interactiveInstance =
-      GoogleSheetsBackend._(interactive: true);
+  static final GoogleSheetsBackend interactiveInstance = GoogleSheetsBackend._(
+    interactive: true,
+  );
 
   static SheetsApiClient _defaultFactory({required bool interactive}) {
     return GoogleApisSheetsClient(interactive: interactive);
@@ -353,10 +346,10 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
 
   final bool interactive;
   final SheetsApiClientFactory _clientFactory;
-  SheetsApiClient? _client;
+  SheetsApiClient? _cachedClient;
 
   Future<SheetsApiClient> _client() async {
-    return _client ??= _clientFactory(interactive: interactive);
+    return _cachedClient ??= _clientFactory(interactive: interactive);
   }
 
   static String _range(String yearTitle, String a1) => "'$yearTitle'!$a1";
@@ -455,15 +448,14 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
       spreadsheetId,
       _range('$year', 'A1:J1'),
     );
-    final firstRow =
-        headerValues.isEmpty ? const <Object?>[] : headerValues.first;
+    final firstRow = headerValues.isEmpty
+        ? const <Object?>[]
+        : headerValues.first;
     if (_isHeaderRow(firstRow)) {
       return;
     }
     if (_isLegacyHeaderRow(firstRow) ||
-        firstRow.every(
-          (value) => value == null || value.toString().isEmpty,
-        )) {
+        firstRow.every((value) => value == null || value.toString().isEmpty)) {
       await _writeHeader(client, spreadsheetId, year);
     }
   }
@@ -483,10 +475,7 @@ class GoogleSheetsBackend implements SheetsSyncBackend {
 
     late final List<List<Object?>> values;
     try {
-      values = await client.readValues(
-        spreadsheetId,
-        _range('$year', 'A:J'),
-      );
+      values = await client.readValues(spreadsheetId, _range('$year', 'A:J'));
     } on SheetsApiException catch (error) {
       // Only a verified missing worksheet/range reads as empty.
       // Permission, authentication, network, and missing-

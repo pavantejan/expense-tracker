@@ -110,9 +110,7 @@ class GoogleAuthService {
 
   Future<void> _doInitialize() async {
     try {
-      await _googleSignIn.initialize(
-        serverClientId: webClientId,
-      );
+      await _googleSignIn.initialize(serverClientId: webClientId);
       _initialized = true;
 
       // Retain the subscription for the app's lifetime: it is the
@@ -185,8 +183,8 @@ class GoogleAuthService {
     try {
       // Nullable Future: some platforms return no Future at all,
       // in which case the result arrives via the stream below.
-      final Future<GoogleSignInAccount?>? lightweightFuture =
-          _googleSignIn.attemptLightweightAuthentication();
+      final Future<GoogleSignInAccount?>? lightweightFuture = _googleSignIn
+          .attemptLightweightAuthentication();
       if (lightweightFuture != null) {
         account = await lightweightFuture;
       }
@@ -206,9 +204,7 @@ class GoogleAuthService {
     }
 
     try {
-      account = await completer.future.timeout(
-        const Duration(seconds: 2),
-      );
+      account = await completer.future.timeout(const Duration(seconds: 2));
       if (account != null) {
         _currentUser = account;
       }
@@ -264,9 +260,7 @@ class GoogleAuthService {
 
     var user = _currentUser;
 
-    if (user == null) {
-      user = await signIn();
-    }
+    user ??= await signIn();
 
     if (user == null) {
       throw const SheetsNotSignedInException();
@@ -287,8 +281,7 @@ class GoogleAuthService {
   ) async {
     GoogleSignInClientAuthorization? existing;
     try {
-      existing =
-          await user.authorizationClient.authorizationForScopes(
+      existing = await user.authorizationClient.authorizationForScopes(
         syncScopes,
       );
     } catch (_) {
@@ -309,8 +302,7 @@ class GoogleAuthService {
   ) async {
     GoogleSignInClientAuthorization? existing;
     try {
-      existing =
-          await user.authorizationClient.authorizationForScopes(
+      existing = await user.authorizationClient.authorizationForScopes(
         syncScopes,
       );
     } catch (_) {
@@ -336,8 +328,7 @@ class GoogleAuthService {
       return false;
     }
     try {
-      final existing =
-          await user.authorizationClient.authorizationForScopes(
+      final existing = await user.authorizationClient.authorizationForScopes(
         syncScopes,
       );
       return existing != null;
@@ -363,12 +354,9 @@ class GoogleAuthService {
             await _ensureSignedInUserInteractive(),
           )
         : await _backgroundAuthorization(
-            _currentUser ??
-                (throw const SheetsNotSignedInException()),
+            _currentUser ?? (throw const SheetsNotSignedInException()),
           );
-    final authenticatedClient = authorization.authClient(
-      scopes: syncScopes,
-    );
+    final authenticatedClient = authorization.authClient(scopes: syncScopes);
     return drive.DriveApi(authenticatedClient);
   }
 
@@ -380,12 +368,9 @@ class GoogleAuthService {
             await _ensureSignedInUserInteractive(),
           )
         : await _backgroundAuthorization(
-            _currentUser ??
-                (throw const SheetsNotSignedInException()),
+            _currentUser ?? (throw const SheetsNotSignedInException()),
           );
-    final authenticatedClient = authorization.authClient(
-      scopes: syncScopes,
-    );
+    final authenticatedClient = authorization.authClient(scopes: syncScopes);
     return sheets.SheetsApi(authenticatedClient);
   }
 }

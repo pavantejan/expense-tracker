@@ -258,11 +258,7 @@ abstract class SheetsSyncBackend {
   /// Returns an empty list when the worksheet does not exist yet.
   Future<List<SheetRowData>> readYearSheet(String spreadsheetId, int year);
 
-  Future<void> appendRow(
-    String spreadsheetId,
-    int year,
-    SheetRowData row,
-  );
+  Future<void> appendRow(String spreadsheetId, int year, SheetRowData row);
 
   Future<void> updateRow(
     String spreadsheetId,
@@ -491,8 +487,7 @@ class SheetsSyncEngine {
 
           await prepareYear(targetYear);
           final currentTargetRow = findRow(targetYear, transaction.uuid);
-          if (currentTargetRow != null &&
-              currentTargetRow.rowIndex != null) {
+          if (currentTargetRow != null && currentTargetRow.rowIndex != null) {
             final updatedRow = SheetRowData.fromTransaction(
               transaction,
               rowIndex: currentTargetRow.rowIndex,
