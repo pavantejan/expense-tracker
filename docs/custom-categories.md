@@ -2,10 +2,23 @@
 
 ## What this module adds
 
-- `CustomCategoryRepository.updateCategory()` now targets only the
-  supplied category ID (Drift `where` clause). Previously it wrote
-  without a `where` clause and would have updated every custom
-  category row. Updating a non-existent ID returns `false`.
+- `CustomCategoryRepository.updateCategory()` delegates to
+  `renameCategory()`, the single write path for custom
+  categories, so no public rename operation can bypass the
+  historical transaction update. It returns `false` for a
+  non-existent ID.
+- `renameCategory()` reads the category row inside the same
+  database transaction and uses the row's actual stored name;
+  the caller never supplies the old name. Category and
+  transaction updates are atomic: a rejected rename (empty,
+  built-in collision, or duplicate name) rolls back and changes
+  nothing.
+- Built-in name restrictions are enforced in the repository as
+  well as in the form: `addCategory()`, `updateCategory()`, and
+  `renameCategory()` reject names colliding with a built-in
+  category, case-insensitively, using the `expenseCategories`
+  definitions as the single source of truth. The UI check in
+  `validateCategoryName()` remains for immediate feedback.
 - Custom categories can be added, edited, and deleted from
   **Settings → Custom categories** (`CategoriesPage`). Built-in
   categories stay visible and read-only. Each custom category
@@ -39,9 +52,9 @@ tests and changes no table or migration.
 Category names are trimmed; empty names are rejected;
 duplicates are rejected case-insensitively against other custom
 categories and against built-in category names, with distinct
-messages. The repository enforces the custom-category duplicate
-rule as well (`ArgumentError`), so the form check is not the
-only guard. Editing a category without renaming it is not a
+messages. The repository enforces both the duplicate rule and
+the built-in rule (`ArgumentError`), so the form check is not
+the only guard. Editing a category without renaming it is not a
 duplicate of itself.
 
 ## Tests
@@ -56,6 +69,11 @@ duplicate of itself.
   (empty, duplicate, built-in collision, valid save with icon,
   edit-without-rename) plus `CategoriesPage` add/delete/edit
   flow tests against an in-memory database.
+- `test/add_transaction_page_test.dart`: selector tests against
+  an in-memory database — custom categories appear with their
+  icons and are selectable, and editing a transaction whose
+  category text belongs to a deleted custom category preserves
+  that text through loading, opening the selector, and saving.
 
 Test-environment note: widget tests that mount a page backed by
 a live Drift database must close the database inside the test

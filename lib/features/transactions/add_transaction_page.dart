@@ -6,6 +6,8 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
+import '../../data/repositories/custom_category_repository.dart';
+import '../../data/repositories/transaction_repository.dart';
 
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
@@ -14,9 +16,19 @@ import '../../core/categories/category.dart';
 import '../../core/sync/sync_coordinator.dart';
 
 class AddTransactionPage extends StatefulWidget {
-  const AddTransactionPage({super.key, this.transactionId});
+  const AddTransactionPage({
+    super.key,
+    this.transactionId,
+    this.transactionRepository,
+    this.customCategoryRepository,
+  });
 
   final int? transactionId;
+
+  /// Injected for tests; production code uses the app-wide
+  /// repositories backed by the real Drift database.
+  final TransactionRepository? transactionRepository;
+  final CustomCategoryRepository? customCategoryRepository;
 
   bool get isEditMode => transactionId != null;
 
@@ -25,6 +37,12 @@ class AddTransactionPage extends StatefulWidget {
 }
 
 class _AddTransactionPageState extends State<AddTransactionPage> {
+  TransactionRepository get _transactionRepository =>
+      widget.transactionRepository ?? transactionRepository;
+
+  CustomCategoryRepository get _customCategoryRepository =>
+      widget.customCategoryRepository ?? customCategoryRepository;
+
   String _type = 'Expense';
   String _category = 'Food';
   String _paymentMethod = 'UPI';
@@ -69,7 +87,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   // ============================================================
 
   Future<void> _loadCustomCategories() async {
-    final categories = await customCategoryRepository.getAllCategories();
+    final categories = await _customCategoryRepository.getAllCategories();
     if (!mounted) {
       return;
     }
@@ -79,7 +97,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   }
 
   Future<void> _loadTransaction(int id) async {
-    final transaction = await transactionRepository.getTransactionById(id);
+    final transaction = await _transactionRepository.getTransactionById(id);
 
     if (!mounted || transaction == null) {
       return;
@@ -158,7 +176,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       // ========================================================
 
       if (widget.transactionId == null) {
-        await transactionRepository.addTransaction(
+        await _transactionRepository.addTransaction(
           TransactionsCompanion.insert(
             uuid: _uuid.v4(),
             type: _type,
@@ -199,7 +217,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       // EDIT EXISTING TRANSACTION
       // ========================================================
       else {
-        await transactionRepository.updateTransaction(
+        await _transactionRepository.updateTransaction(
           widget.transactionId!,
           TransactionsCompanion(
             type: Value(_type),

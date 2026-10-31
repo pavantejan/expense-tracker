@@ -77,8 +77,8 @@ void main() {
     test('updating one category leaves another unchanged', () async {
       final firstId = await addCategoryNamed('Gym');
       final secondId = await categories.addCategory(
-        uuid: 'cat-travel',
-        name: 'Travel',
+        uuid: 'cat-commute',
+        name: 'Commute',
         iconCodePoint: Icons.flight_rounded.codePoint,
       );
 
@@ -93,7 +93,7 @@ void main() {
       final second = await categories.getCategoryById(secondId);
       expect(first!.name, 'Gym Club');
       expect(first.iconCodePoint, Icons.spa_rounded.codePoint);
-      expect(second!.name, 'Travel');
+      expect(second!.name, 'Commute');
       expect(second.iconCodePoint, Icons.flight_rounded.codePoint);
     });
 
@@ -170,7 +170,6 @@ void main() {
 
       final renamed = await categories.renameCategory(
         id: id,
-        oldName: 'Gym',
         name: 'Gym Club',
         iconCodePoint: Icons.fitness_center_rounded.codePoint,
       );
@@ -195,7 +194,6 @@ void main() {
 
       await categories.renameCategory(
         id: id,
-        oldName: 'Gym',
         name: 'Gym Club',
         iconCodePoint: Icons.fitness_center_rounded.codePoint,
       );
@@ -220,7 +218,6 @@ void main() {
 
       final renamed = await categories.renameCategory(
         id: id,
-        oldName: 'Gym',
         name: 'Gym',
         iconCodePoint: Icons.spa_rounded.codePoint,
       );
@@ -237,12 +234,12 @@ void main() {
 
       final renamed = await categories.renameCategory(
         id: 999,
-        oldName: 'Gym',
         name: 'Gym Club',
         iconCodePoint: Icons.fitness_center_rounded.codePoint,
       );
 
       expect(renamed, isFalse);
+      expect((await categories.getAllCategories()).single.name, 'Gym');
       final rows = await transactions.watchAllTransactions().first;
       expect(rows.single.category, 'Gym');
       expect(await transactions.getPendingTransactions(), isEmpty);
@@ -257,6 +254,153 @@ void main() {
       final rows = await transactions.watchAllTransactions().first;
       expect(rows.length, 1);
       expect(rows.single.category, 'Gym');
+    });
+
+    test(
+      'updateCategory renames while updating matching transactions',
+      () async {
+        final id = await addCategoryNamed('Gym');
+        await transactions.addTransaction(testTransaction(category: 'Gym'));
+        await transactions.addTransaction(testTransaction(category: 'Gym'));
+
+        final updated = await categories.updateCategory(
+          id: id,
+          name: 'Gym Club',
+          iconCodePoint: Icons.spa_rounded.codePoint,
+        );
+
+        expect(updated, isTrue);
+        expect((await categories.getCategoryById(id))!.name, 'Gym Club');
+        final rows = await transactions.watchAllTransactions().first;
+        expect(rows.length, 2);
+        expect(rows.every((t) => t.category == 'Gym Club'), isTrue);
+        expect((await transactions.getPendingTransactions()).length, 2);
+      },
+    );
+
+    test('built-in names are rejected when adding a category', () async {
+      expect(() => addCategoryNamed('Food'), throwsArgumentError);
+      expect(() => addCategoryNamed('food'), throwsArgumentError);
+      expect(() => addCategoryNamed('  TRAVEL  '), throwsArgumentError);
+
+      expect(await categories.getAllCategories(), isEmpty);
+    });
+
+    test('built-in names are rejected when renaming a category', () async {
+      final id = await addCategoryNamed('Gym');
+      final txnId = await transactions.addTransaction(
+        testTransaction(category: 'Gym'),
+      );
+
+      expect(
+        () => categories.renameCategory(
+          id: id,
+          name: 'Bills',
+          iconCodePoint: Icons.fitness_center_rounded.codePoint,
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => categories.updateCategory(
+          id: id,
+          name: 'other',
+          iconCodePoint: Icons.fitness_center_rounded.codePoint,
+        ),
+        throwsArgumentError,
+      );
+
+      // A rejected rename changes nothing: atomic rollback.
+      expect((await categories.getCategoryById(id))!.name, 'Gym');
+      expect((await transactions.getTransactionById(txnId))!.category, 'Gym');
+      expect(await transactions.getPendingTransactions(), isEmpty);
+    });
+
+    test(
+      'icon-only editing via updateCategory touches no transaction',
+      () async {
+        final id = await addCategoryNamed('Gym');
+        final originalUpdatedAt = DateTime(2026, 1, 1);
+        await transactions.addTransaction(
+          testTransaction(
+            category: 'Gym',
+            syncStatus: 'synced',
+            updatedAt: originalUpdatedAt,
+          ),
+        );
+
+        final updated = await categories.updateCategory(
+          id: id,
+          name: 'Gym',
+          iconCodePoint: Icons.spa_rounded.codePoint,
+        );
+
+        expect(updated, isTrue);
+        expect(
+          (await categories.getCategoryById(id))!.iconCodePoint,
+          Icons.spa_rounded.codePoint,
+        );
+        expect(await transactions.getPendingTransactions(), isEmpty);
+        final row = (await transactions.watchAllTransactions().first).single;
+        expect(row.updatedAt, originalUpdatedAt);
+        expect(row.syncStatus, 'synced');
+      },
+    );
+
+    test('renaming does not change unrelated built-in transactions', () async {
+      final id = await addCategoryNamed('Gym');
+      final originalUpdatedAt = DateTime(2026, 1, 1);
+      await transactions.addTransaction(
+        testTransaction(
+          category: 'Food',
+          syncStatus: 'synced',
+          updatedAt: originalUpdatedAt,
+        ),
+      );
+      await transactions.addTransaction(testTransaction(category: 'Gym'));
+
+      await categories.renameCategory(
+        id: id,
+        name: 'Gym Club',
+        iconCodePoint: Icons.fitness_center_rounded.codePoint,
+      );
+
+      final rows = await transactions.watchAllTransactions().first;
+      final food = rows.singleWhere((t) => t.category == 'Food');
+      expect(food.updatedAt, originalUpdatedAt);
+      expect(food.syncStatus, 'synced');
+      expect(rows.where((t) => t.category == 'Gym Club').length, 1);
+    });
+
+    test('soft-deleted rows stay deleted and pending after a rename', () async {
+      final id = await addCategoryNamed('Gym');
+      final txnId = await transactions.addTransaction(
+        testTransaction(
+          category: 'Gym',
+          syncStatus: 'synced',
+          updatedAt: DateTime(2026, 1, 1),
+        ),
+      );
+      expect(await transactions.deleteTransaction(txnId), isTrue);
+      final deletedBefore = (await transactions.getTransactionById(txnId))!;
+      expect(deletedBefore.deleted, isTrue);
+      expect(deletedBefore.syncStatus, 'pending');
+
+      await categories.renameCategory(
+        id: id,
+        name: 'Gym Club',
+        iconCodePoint: Icons.fitness_center_rounded.codePoint,
+      );
+
+      final renamed = (await transactions.getTransactionById(txnId))!;
+      expect(renamed.deleted, isTrue);
+      expect(renamed.category, 'Gym Club');
+      expect(renamed.syncStatus, 'pending');
+      // The rename advances the revision beyond the originally
+      // seeded timestamp. (DateTime storage truncates to second
+      // precision, so a same-second delete-then-rename can read
+      // back equal timestamps; the bump itself is strictly
+      // increasing in Dart, as the pending-revision test shows.)
+      expect(renamed.updatedAt.isAfter(DateTime(2026, 1, 1)), isTrue);
     });
   });
 }

@@ -275,7 +275,6 @@ class _CategoriesPageState extends State<CategoriesPage> {
     try {
       updated = await _repository.renameCategory(
         id: category.id,
-        oldName: category.name,
         name: result.name,
         iconCodePoint: result.iconCodePoint,
       );
