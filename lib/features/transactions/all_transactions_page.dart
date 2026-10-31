@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/categories/category.dart';
 import '../../core/database/repository_provider.dart';
 import '../../core/notifications/notification_manager.dart';
+import '../../core/sync/sync_coordinator.dart';
 import '../../data/database/app_database.dart';
 import '../../data/notifications/notification.dart';
 import 'add_transaction_page.dart';
@@ -100,6 +103,8 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
       message: '$title • ₹${transaction.amount.toStringAsFixed(2)}',
     );
 
+    unawaited(sheetsSyncCoordinator.requestSync());
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: const Text('Transaction deleted'),
@@ -120,6 +125,8 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
               title: 'Transaction restored',
               message: '$title • ₹${transaction.amount.toStringAsFixed(2)}',
             );
+
+            unawaited(sheetsSyncCoordinator.requestSync());
 
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(

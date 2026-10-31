@@ -183,4 +183,33 @@ class TransactionRepository {
           ..where((t) => t.id.equals(id)))
         .getSingleOrNull();
   }
+
+  /// All rows awaiting Sheets synchronization, including soft-deleted
+  /// rows (a deletion is itself a change to sync) and rows deleted
+  /// before they were ever synced. Oldest update first, so retries
+  /// process work in a stable order.
+  Future<List<Transaction>> getPendingTransactions() {
+    return (_database.select(_database.transactions)
+          ..where((t) => t.syncStatus.equals('pending'))
+          ..orderBy([
+            (t) => OrderingTerm(
+                  expression: t.updatedAt,
+                ),
+          ]))
+        .get();
+  }
+
+  /// Marks one row synced after its Sheets write succeeded. Only
+  /// `syncStatus` changes: `updatedAt` is left untouched so the
+  /// timestamp stored in Sheets keeps matching the last real edit.
+  Future<bool> markTransactionSynced(int id) {
+    return (_database.update(_database.transactions)
+          ..where((t) => t.id.equals(id)))
+        .write(
+          const TransactionsCompanion(
+            syncStatus: Value('synced'),
+          ),
+        )
+        .then((count) => count > 0);
+  }
 }

@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/auth/google_auth_service.dart';
-import '../../core/sync/google_sheets_service.dart';
+import '../../core/sync/google_sheets_backend.dart';
+import '../../core/sync/sync_coordinator.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -16,6 +19,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   bool _isLoading = false;
   bool _isDriveSettingUp = false;
+  bool _isSyncing = false;
 
   String? get _userEmail =>
       _googleAuthService.currentUser?.email;
@@ -45,6 +49,9 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
       );
+
+      // Pending local changes can now sync in the background.
+      unawaited(sheetsSyncCoordinator.requestSync());
     } catch (error) {
       if (!mounted) {
         return;
@@ -113,12 +120,13 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   // ============================================================
-  // GOOGLE DRIVE TEST
-  // ============================================================
-
-
-  // ============================================================
-  // GOOGLE SHEETS
+  // GOOGLE SHEETS — ONE MASTER SPREADSHEET
+  //
+  // Resolves (or creates, only if missing) the single
+  // "Expense Tracker" folder + spreadsheet, and ensures the
+  // current-year worksheet exists. It never creates a second
+  // spreadsheet, never deletes anything, and never touches
+  // local transactions.
   // ============================================================
 
   Future<void> _createGoogleSheet() async {
@@ -140,11 +148,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
     try {
       final spreadsheetId =
-          await GoogleSheetsService.instance
-              .createSpreadsheet();
-
-      await GoogleSheetsService.instance
-          .writeHeaders(spreadsheetId);
+          await GoogleSheetsBackend.instance.resolveSpreadsheetId();
+      await GoogleSheetsBackend.instance.ensureYearSheet(
+        spreadsheetId,
+        DateTime.now().year,
+      );
 
       if (!mounted) {
         return;
@@ -153,13 +161,9 @@ class _SettingsPageState extends State<SettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Expense Tracker Google Sheet created successfully.',
+            'Expense Tracker Google Sheet is ready for backup.',
           ),
         ),
-      );
-
-      debugPrint(
-        'Expense Tracker Spreadsheet ID: $spreadsheetId',
       );
     } catch (error) {
       if (!mounted) {
@@ -169,7 +173,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Google Sheet creation failed: $error',
+            'Google Sheet setup failed: $error',
           ),
         ),
       );
@@ -177,6 +181,33 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) {
         setState(() {
           _isDriveSettingUp = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _retrySync() async {
+    if (_userEmail == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Please sign in with Google first.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      await sheetsSyncCoordinator.syncNow();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
         });
       }
     }
@@ -383,6 +414,83 @@ class _SettingsPageState extends State<SettingsPage> {
                         _isDriveSettingUp
                             ? 'Creating Sheet...'
                             : 'Create Expense Tracker Sheet',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // ======================================================
+          // SYNC
+          // ======================================================
+
+          const SizedBox(height: 24),
+
+          Text(
+            'Sync',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      CircleAvatar(
+                        child: Icon(
+                          Icons.sync_rounded,
+                        ),
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Pending backup',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Transactions are always saved locally first. Retry sends pending changes to Google Sheets.',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: email == null || _isSyncing
+                          ? null
+                          : _retrySync,
+                      icon: _isSyncing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.sync_rounded,
+                            ),
+                      label: Text(
+                        _isSyncing ? 'Syncing...' : 'Retry sync now',
                       ),
                     ),
                   ),

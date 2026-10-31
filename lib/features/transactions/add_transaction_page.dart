@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
@@ -9,7 +11,7 @@ import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
 
 import '../../core/categories/category.dart';
-import '../../core/sync/google_sheets_service.dart';
+import '../../core/sync/sync_coordinator.dart';
 
 class AddTransactionPage extends StatefulWidget {
   const AddTransactionPage({
@@ -198,58 +200,22 @@ class _AddTransactionPageState
               '₹${amount.toStringAsFixed(2)}',
         );
 
-        // ======================================================
-        // GOOGLE SHEETS BACKUP
-        //
-        // Important:
-        // Local transaction is already saved above.
-        //
-        // If Google Sheets fails, the local transaction
-        // remains safe.
-        // ======================================================
-
-        try {
-          await GoogleSheetsService.instance
-              .backupExpense(
-            date:
-                '${_selectedDate.year}-'
-                '${_selectedDate.month.toString().padLeft(2, '0')}-'
-                '${_selectedDate.day.toString().padLeft(2, '0')}',
-            type: _type,
-            category: _category,
-            description: description,
-            amount: amount,
-          );
-
-          if (!mounted) {
-            return;
-          }
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Transaction saved and backed up to Google Sheets.',
-              ),
-            ),
-          );
-        } catch (error) {
-          debugPrint(
-            'Google Sheets backup failed: $error',
-          );
-
-          if (!mounted) {
-            return;
-          }
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Transaction saved locally. '
-                'Google Sheets backup failed.',
-              ),
-            ),
-          );
+        // The local save above is the source of truth. Sheets
+        // synchronization runs in the background and never blocks
+        // this save: it is triggered fire-and-forget below, after
+        // the local confirmation, and a remote failure leaves the
+        // transaction pending for retry instead of losing it.
+        if (!mounted) {
+          return;
         }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Transaction saved locally.',
+            ),
+          ),
+        );
       }
 
       // ========================================================
@@ -306,6 +272,10 @@ class _AddTransactionPageState
       if (!mounted) {
         return;
       }
+
+      // Fire-and-forget: sync never blocks leaving this page and
+      // never throws into the save flow.
+      unawaited(sheetsSyncCoordinator.requestSync());
 
       Navigator.of(context).pop();
     } finally {

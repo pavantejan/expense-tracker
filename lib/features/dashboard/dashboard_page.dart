@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/database/repository_provider.dart';
@@ -5,6 +7,7 @@ import '../../data/database/app_database.dart';
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
 import '../../core/categories/category.dart';
+import '../../core/sync/sync_coordinator.dart';
 import '../analytics/monthly_category_analytics_page.dart';
 import '../transactions/add_transaction_page.dart';
 import '../transactions/all_transactions_page.dart';
@@ -859,6 +862,8 @@ Future<void> _showDeleteConfirmation(
         '₹${transaction.amount.toStringAsFixed(2)}',
   );
 
+  unawaited(sheetsSyncCoordinator.requestSync());
+
   ScaffoldMessenger.of(context)
       .showSnackBar(
     SnackBar(
@@ -888,6 +893,8 @@ Future<void> _showDeleteConfirmation(
                 '${transaction.description?.isNotEmpty == true ? transaction.description : transaction.category} • '
                 '₹${transaction.amount.toStringAsFixed(2)}',
           );
+
+          unawaited(sheetsSyncCoordinator.requestSync());
 
           ScaffoldMessenger.of(context)
               .showSnackBar(
