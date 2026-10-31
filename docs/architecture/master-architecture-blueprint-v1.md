@@ -22,15 +22,15 @@ The current application is a small, working, local-first expense tracker: Drift/
 This blueprint keeps what works — the Drift foundation, the Sheets sync engine and its acknowledgement discipline, the local-first save path, and the repository/provider structure — and defines the smallest foundation that can grow into a personal finance application without a rewrite in every module:
 
 1. **Integer minor-unit money** (paise for INR) behind a single `Money` value object. No persisted `double` amounts.
-2. **Accounts + a double-entry-lite ledger.** Every financial event writes balanced postings inside one database transaction; balances are derived from postings, never hand-maintained in two places.
-3. **Stable identifiers everywhere.** UUIDs for synchronisable records; stable category IDs (never display names) as relationships; archival instead of deletion for anything historical data references.
-4. **Sheets compatibility as a contract.** Columns A:J are frozen forever; new fields extend rightward under a versioned schema; `syncRevision` stays local-only; Sheets never becomes the canonical ledger.
+2. **Accounts + a LedgerAccount-based double-entry ledger.** Every financial event writes balanced postings (SUM debits == SUM credits) against `LedgerAccount` rows — user asset/liability accounts, per-category system accounts, and the opening-equity/adjustment system accounts; balances derive from postings, never hand-maintained in two places. Opening balances are dedicated `opening_balance` events, not fields.
+3. **Stable identifiers everywhere.** UUIDs for synchronisable records; stable category IDs (never display names) as relationships; archival instead of deletion for anything historical data references. No `transferGroupId`: a transfer is one transaction with two postings and two explicit account references.
+4. **Sheets compatibility as a contract, with a distinct V2 identity.** The V1 spreadsheet is preserved untouched as an archive; the new model writes to a separate V2 spreadsheet with its own resolvable identity. Columns A:J are frozen within each version; new fields extend rightward in a frozen K+ order carrying stable identity fields (`CategoryId`, `AccountId`, `FromAccountId`, `ToAccountId`, `CardId`); `syncRevision` stays local-only; amounts are numeric cells produced from integer paise at the boundary only; Sheets never becomes the canonical ledger.
 5. **One document-intake pipeline** for camera, gallery, PDF, CSV and Android share intents, ending in human review. Nothing unverified is ever posted automatically.
-6. **Security throughout, not at the end.** Masking, retention, temp-file lifecycle and the app-lock-is-not-encryption boundary are specified now, even though the security module ships last.
+6. **Security throughout, not at the end.** Masking, retention, temp-file lifecycle and the app-lock-is-not-encryption boundary are specified now, even though the lock UI ships last. Minimum sensitive-file and import protections are a readiness gate *before* Module 7 ships (§11.8), and backup encryption is a hard gate *before* Module 3 ships (§11.7).
 
 The delivery order is fixed (§12–§13): foundation first (Module 1, accounts + ledger), then logging speed, export, budgets, recurring, cards, import, analytics, net worth, goals, insights, polish, and split-and-settle last. Split-and-settle is deliberately last because it depends on accounts, people/groups, and a settled ledger.
 
-**The single biggest decision in this blueprint is the database reset (§7.6, ADR-005).** The user confirmed the existing data is disposable test data. The architecture therefore targets a clean new financial data model rather than a migration that pretends test data must be preserved. No reset happens in this task, and no reset may happen silently in production: it must be an explicit, user-approved action in the Module 1 implementation, with the existing spreadsheet left untouched.
+**The single biggest decision in this blueprint is the fresh-database strategy (§7, ADR-005/ADR-014).** The user confirmed the existing data is disposable test data. The architecture therefore targets a clean new financial data model in a new database (`expense_tracker_v2`), leaving the old v7 database untouched as an archive — not a destructive reset of the live database. No reset happens in this task, and no destructive action may happen automatically on startup: the old file is never opened by new code, and its cleanup (if ever) must be an explicit, user-approved action.
 
 ---
 
@@ -105,7 +105,7 @@ Local-first saving (UI never waits on Sheets); conditional acknowledgement disci
 
 - `GoogleSignInTestPage` — no callers. **[Proposed]** Remove in Module 1 cleanup (do not remove in this task).
 - `TransactionRepository.getBalanceBeforeMonth` — no callers. **[Proposed]** Remove or replace with ledger-derived balances in Module 1.
-- `AppSettings` table file + raw-SQL `app_settings` migrations — legacy, table dropped in v5 migration. **[Proposed]** Superseded by the new `AppSettings` entity design (§5); removal is part of the Module 1 reset decision, not this task.
+- `AppSettings` table file + raw-SQL `app_settings` migrations — legacy, table dropped in v5 migration. **[Proposed]** Superseded by the new `AppSettings` entity design (§5); removal is part of the Module 1 fresh-database switch (§7), not this task.
 - Default-template `README.md` — **[Proposed]** rewrite as part of Module 12 polish, or with the Module 1 foundation PR if the tech lead prefers.
 
 ### 2.6 Risks carried into the redesign
@@ -225,9 +225,13 @@ Existing feature folders (`dashboard`, `summary`, `analytics`, `transactions`, `
 
 ```mermaid
 erDiagram
-    ACCOUNT ||--o{ POSTING : "holds"
+    ACCOUNT ||--|| LEDGER_ACCOUNT : "maps to (user ledger account)"
+    LEDGER_ACCOUNT ||--o{ POSTING : "is debited/credited by"
+    CATEGORY ||--|| LEDGER_ACCOUNT : "maps to (system ledger account)"
+    LEDGER_ACCOUNT }o--|| ACCOUNT : "user account (user kinds only)"
+    LEDGER_ACCOUNT }o--|| CATEGORY : "category (system kinds only)"
     ACCOUNT ||--o{ CREDIT_CARD : "profile for liability accounts"
-    ACCOUNT ||--o{ CARD_STATEMENT : "statements (card accounts)"
+    ACCOUNT ||--o{ CARD_STATEMENT : "statements (card accounts, via card)"
     FINANCIAL_TRANSACTION ||--o{ POSTING : "posts"
     FINANCIAL_TRANSACTION ||--o{ TRANSACTION_HISTORY : "audits"
     FINANCIAL_TRANSACTION }o--|| CATEGORY : "classified by stable id"
@@ -236,46 +240,53 @@ erDiagram
     TAG ||--o{ TRANSACTION_TAG : "applied by"
     FINANCIAL_TRANSACTION }o--|| RECURRING_RULE : "generated by"
     FINANCIAL_TRANSACTION }o--|| EXTRACTION_CANDIDATE : "confirmed from"
-    FINANCIAL_TRANSACTION }o--|| FINANCIAL_TRANSACTION : "reverses / refunds"
+    FINANCIAL_TRANSACTION }o--|| FINANCIAL_TRANSACTION : "reverses / refunds / corrects"
+    FINANCIAL_TRANSACTION }o--|| ACCOUNT : "source account (transfers)"
+    FINANCIAL_TRANSACTION }o--|| ACCOUNT : "destination account (transfers)"
+    FINANCIAL_TRANSACTION }o--|| EMI_SCHEDULE : "charged instalment of"
     BUDGET ||--o{ BUDGET_LINE : "allocates per category"
     BUDGET_LINE }o--|| CATEGORY : "covers"
     RECURRING_RULE ||--o{ SCHEDULED_OCCURRENCE : "expands to"
     SCHEDULED_OCCURRENCE }o--|| FINANCIAL_TRANSACTION : "materialises as"
+    CREDIT_CARD }o--|| ACCOUNT : "liability account (1:1)"
     CREDIT_CARD ||--o{ CARD_STATEMENT : "bills in"
-    CARD_STATEMENT ||--o{ EMI_SCHEDULE : "contains instalments"
-    EMI_SCHEDULE }o--|| FINANCIAL_TRANSACTION : "charged as"
+    CREDIT_CARD ||--o{ EMI_SCHEDULE : "instalment plan on"
     IMPORT_BATCH ||--o{ IMPORT_DOCUMENT : "contains"
     IMPORT_DOCUMENT ||--o{ EXTRACTION_CANDIDATE : "yields"
-    IMPORT_DOCUMENT }o--|| ACCOUNT : "statement for"
-    IMPORT_DOCUMENT }o--|| CREDIT_CARD : "statement for"
+    IMPORT_DOCUMENT }o--o{ BANK_STATEMENT_SUMMARY : "summarised by (at most one)"
+    IMPORT_DOCUMENT }o--o{ CARD_STATEMENT : "summarised by (at most one)"
+    IMPORT_DOCUMENT }o--|| ACCOUNT : "statement for (mutually exclusive, see note)"
+    IMPORT_DOCUMENT }o--|| CREDIT_CARD : "statement for (mutually exclusive, see note)"
     SAVINGS_GOAL ||--o{ GOAL_CONTRIBUTION : "funded by"
-    GOAL_CONTRIBUTION }o--|| ACCOUNT : "moves from"
-    GOAL_CONTRIBUTION }o--|| FINANCIAL_TRANSACTION : "backed by transfer"
-    NET_WORTH_ASSET ||--|| ACCOUNT : "mirrors (manual assets)"
+    GOAL_CONTRIBUTION }o--|| ACCOUNT : "moves from (transfer kind only)"
+    GOAL_CONTRIBUTION }o--|| FINANCIAL_TRANSACTION : "backed by transfer (transfer kind only)"
+    APP_SETTINGS }o--|| ACCOUNT : "default account (optional)"
+    REMINDER ||--|| RECURRING_RULE : "reminds for"
+    REMINDER ||--|| CREDIT_CARD : "due-date for"
+    REMINDER ||--|| EMI_SCHEDULE : "due for"
     PERSON ||--o{ GROUP_MEMBER : "joins"
     GROUP ||--o{ GROUP_MEMBER : "has"
     GROUP ||--o{ SPLIT_EXPENSE : "contains (Module 13)"
     PERSON ||--o{ SPLIT_EXPENSE : "participates (Module 13)"
-    REMINDER ||--|| RECURRING_RULE : "reminds for"
-    REMINDER ||--|| CREDIT_CARD : "due-date for"
-    REMINDER ||--|| EMI_SCHEDULE : "due for"
-    APP_SETTINGS ||--|| ACCOUNT : "default account"
 ```
 
-Notes: `SPLIT_EXPENSE` and split share/settlement entities are shown only as placeholders for Module 13; they are **not** designed in detail here and must not be built early. `NET_WORTH_ASSET`/`NET_WORTH_LIABILITY` are manual (non-account) holdings; account-backed net worth derives from `ACCOUNT` + postings.
+Notes: `SPLIT_EXPENSE` and split share/settlement entities are shown only as placeholders for Module 13; they are **not** designed in detail here and must not be built early. `NET_WORTH_ASSET` and `NET_WORTH_LIABILITY` are standalone manual holdings with **no** relationship to `ACCOUNT` (they are deliberately absent from the diagram's relationships: net worth is derived account balances plus manual assets minus manual liabilities). `CARD_STATEMENT` never owns an `EMI_SCHEDULE`: an EMI spans multiple billing cycles and belongs to its `CREDIT_CARD`; individual instalment charges are `FINANCIAL_TRANSACTION`s linked to the schedule. `IMPORT_DOCUMENT` mutual exclusion: once classified, exactly one of `accountId`/`creditCardId` is set; both null means unclassified; both set is invalid (enforced in the service layer, §5.2). `APP_SETTINGS` is a single row whose `defaultAccountId` is an optional (0..1) reference to one `ACCOUNT`.
 
 ### 5.2 Data dictionary
 
 Conventions for every entity below: **PK** = primary key; **FK** = foreign key; **Amount** states the storage representation; **Lifecycle** states delete/archive rules; **Sync** states whether the entity participates in Google Sheets sync; **Sensitive** flags data needing masking/retention care (§10). All synchronisable entities carry `uuid` (TEXT, unique), `createdAt`, `updatedAt`, `syncRevision` (local-only integer, as established in PR #2) and `syncStatus` where they sync. `deleted` is a soft-delete flag wherever history must survive. Amounts are integer minor units (§6) unless stated otherwise. Nothing in this dictionary is implemented in this task.
 
 **Account** — A place money lives or is owed. Purpose: balance holder and posting target.
-PK: `uuid`. Fields: `name`, `kind` (`bank` | `cash` | `wallet` | `other_asset` | `credit_card_liability`), `currencyCode` (default `INR`), `icon`, `color`, `isArchived`, `archivedAt`, `displayOrder`, `openingPostingId` (FK → Posting, nullable). Amounts: no stored balance field — balance derives from postings (§6.4); opening balance is an opening posting, not a mutable number. Relationships: 1:N Postings; 0/1 CreditCard profile (only when `kind = credit_card_liability`). Lifecycle: archive only; never hard-delete while postings exist. Archived accounts disappear from pickers but keep history and balances. Sync: **[Proposed]** scoped — account *names/kinds* sync only under the §8 rules; balances are never synced (derived locally). Sensitive: account names only; masked account numbers live on the CreditCard/statement entities, never here.
+PK: `uuid`. Fields: `name`, `kind` (`bank` | `cash` | `wallet` | `other_asset` | `credit_card_liability`), `currencyCode` (default `INR`), `icon`, `color`, `isArchived`, `archivedAt`, `displayOrder`. There is **no** `openingPostingId` field: the opening balance is a dedicated `FinancialTransaction` of kind `opening_balance` (§6.4), and the account-to-ledger mapping is one-directional from `LedgerAccount.userAccountId` (no circular foreign key). Amounts: no stored balance field — balance derives from postings (§6.4); opening balance is an opening transaction, not a mutable number. Relationships: 1:1 `LedgerAccount` (kind `user_asset` or `user_liability`, created in the same database transaction as the account); 0/1 CreditCard profile (only when `kind = credit_card_liability`). Lifecycle: archive only; never hard-delete while postings exist. Archived accounts disappear from pickers but keep history and balances. Sync: **[Proposed]** scoped — account *names/kinds* sync only under the §8 rules; balances are never synced (derived locally). Sensitive: account names only; masked account numbers live on the CreditCard/statement entities, never here.
+
+**LedgerAccount** — The ledger-level account that every posting references. Purpose: give every financial event a balanced double-entry representation without exposing bookkeeping accounts to the user. This is the small abstraction that resolves the counterpart question: there is exactly one kind of posting target, and user accounts, category accounts and equity accounts are all ledger accounts of different kinds.
+PK: `ledgerAccountId` (stable string id; user ledger accounts use the account's `uuid`, system ledger accounts use fixed ids — see below). Fields: `kind` (`user_asset` | `user_liability` | `system_expense` | `system_income` | `system_opening_equity` | `system_adjustment`), `userAccountId` (nullable; set iff `kind` is `user_asset`/`user_liability`), `categoryId` (nullable; set iff `kind` is `system_expense`/`system_income`), `isSystem` (true for every `system_*` kind), `normalBalance` (`debit` | `credit` — §6.3), `isArchived` (mirrors its category/account archival). Fixed system ids: `opening_equity` (one row, kind `system_opening_equity`), `adjustments` (one row, kind `system_adjustment`); per-category system accounts use id `expense:<categoryId>` / `income:<categoryId>`, created in the same transaction as the category and archived with it. Validation (service layer + tests): exactly one of `userAccountId`/`categoryId` is set for user/system-category kinds, neither is set for `opening_equity`/`adjustments`; a posting may reference only a `LedgerAccount` row that exists and is not archived. Amounts: none stored (balances derive from postings). Relationships: 1:N Postings; 0/1 Account; 0/1 Category. Lifecycle: never hard-deleted; archived with its account/category. Sync: no — ledger accounts are local bookkeeping structure. Sensitive: no. **System ledger accounts are never shown as normal user accounts**: account pickers, Home balances and Manage lists query `isSystem = false` only.
 
 **FinancialTransaction** — The business event the user understands (a purchase, salary, transfer, payment, refund). Purpose: reporting, search, history, sync unit.
-PK: `uuid`. FKs: `categoryId` (stable category id, nullable for transfers), `merchantId` (nullable), `recurringRuleId` (nullable), `candidateId` (nullable), `reversesTransactionId` (nullable, self-reference for refunds), `transferGroupId` (nullable, shared by the two legs of a transfer — see §6.3). Fields: `kind` (`expense` | `income` | `transfer` | `card_payment` | `refund` | `adjustment`), `occurredAt` (date), `amountMinorUnits` (see §6.2 for which amount a transfer/refund carries), `currencyCode`, `description`, `notes`, `paymentChannel` (UPI/cash/card/bank — replaces free-text payment method), `status` (`active` | `deleted`), `source` (`manual` | `recurring` | `import` | `template`). Amounts: integer minor units. Relationships: 1:N Postings (≥2, balanced); N:M Tags; 1:N History rows. Lifecycle: soft-delete only; restore re-includes postings. Sync: yes — the Sheets sync unit (§8). Sensitive: description/notes are user text; never logged.
+PK: `uuid`. FKs: `categoryId` (stable category id, nullable for transfers/card payments/opening balances), `merchantId` (nullable), `recurringRuleId` (nullable), `candidateId` (nullable), `reversesTransactionId` (nullable, self-reference — set on refunds and reversals, pointing at the original transaction), `relatedTransactionId` (nullable, self-reference — set on adjustments that correct another transaction, e.g. an opening-balance correction), `emiScheduleId` (nullable — instalment charges), `sourceAccountId` (nullable; required iff `kind = transfer`), `destinationAccountId` (nullable; required iff `kind = transfer` or `kind = card_payment`). There is **no** `transferGroupId`: a transfer is one financial event with two postings and two explicit account references (§6.3, rule D). Fields: `kind` (`expense` | `income` | `transfer` | `card_payment` | `refund` | `adjustment` | `opening_balance` | `reversal`), `occurredAt` (date), `amountMinorUnits` (the event amount; for a refund, the refunded amount — see §6.3 rule G for the maximum; for a transfer, the moved amount; for an opening balance, the opening amount), `currencyCode`, `description`, `notes`, `paymentChannel` (UPI/cash/card/bank — replaces free-text payment method), `status` (`active` | `deleted`), `source` (`manual` | `recurring` | `import` | `template`), `adjustmentReason` (nullable; required iff `kind = adjustment`: `opening_balance_correction` | `balance_correction` | `fee_correction` | `other`). Amounts: integer minor units. Relationships: 1:N Postings (≥2, balanced, §6.3); N:M Tags; 1:N History rows; 0..N refunds/reversals pointing back via `reversesTransactionId`. Lifecycle: soft-delete only; restore re-includes postings. At most one active `opening_balance` transaction per account (enforced in the service layer). Sync: yes — the Sheets sync unit (§8). Sensitive: description/notes are user text; never logged.
 
 **Posting (ledger entry)** — One side of a balanced financial event. Purpose: the single source of truth for balances.
-PK: `uuid`. FKs: `transactionId`, `accountId`. Fields: `direction` (`debit` | `credit` — defined in §6.3), `amountMinorUnits` (always positive; direction carries the sign), `currencyCode` (must equal the account currency in V1), `postingDate` (equals transaction date in V1). Amounts: integer minor units. Relationships: N:1 Transaction, N:1 Account. Lifecycle: never edited directly; replaced atomically with its transaction (old postings superseded in the same DB transaction, history row records the change). Sync: no — postings are derived locally from transactions; Sheets never receives postings. Sensitive: no.
+PK: `uuid`. FKs: `transactionId`, `ledgerAccountId` (→ `LedgerAccount` — the *only* account reference a posting carries; the user account, category account or equity account is resolved through the ledger account's mapping). Fields: `direction` (`debit` | `credit` — distinct values, never a signed amount), `amountMinorUnits` (always strictly positive; direction carries the sign — zero-amount postings are forbidden), `currencyCode` (must equal the ledger account's currency in V1), `postingDate` (equals transaction date in V1). Amounts: integer minor units, positive only. Relationships: N:1 Transaction, N:1 LedgerAccount. Lifecycle: never edited directly; replaced atomically with its transaction (old postings superseded in the same DB transaction, history row records the change). Sync: no — postings are derived locally from transactions; Sheets never receives postings. Sensitive: no.
 
 **TransactionHistory** — Audit trail for edits. Purpose: answer "what changed?" without complicating the ledger.
 PK: `uuid`. FK: `transactionId`. Fields: `changedAt`, `changeKind` (`created` | `edited` | `deleted` | `restored` | `renamed_category`), `beforeSnapshot` (structured field values before the change — amounts as minor units, category id, account ids; never full document text), `afterSnapshot`. Lifecycle: append-only; retained with the transaction; deleted only if the user explicitly purges history (Module 12 decision — **[Unresolved]**). Sync: no. Sensitive: contains old descriptions — same handling as transaction text.
@@ -304,20 +315,23 @@ PK: `uuid`. FKs: `ruleId`, `transactionId` (nullable until materialised). Fields
 **CreditCard** — Profile for a liability account. Purpose: limits, cycles, due dates, statements.
 PK: `uuid`. FK: `accountId` (the liability account, 1:1). Fields: `issuer`, `name`, `maskedNumber` (last 4 digits only — full numbers are never stored), `creditLimitMinorUnits`, `billingDayOfMonth`, `dueDayOfMonth`, `isActive`. Amounts: integer minor units. Lifecycle: archiving the card archives the account; statements retained. Sync: **[Proposed]** profile syncs only as name/issuer/last4 under §8 rules; limits/dates are local. Sensitive: **yes** — last4 + issuer only; never store full PAN, CVV or PIN (§10.3).
 
-**CardStatement** — One billing cycle. Purpose: reconciliation + due tracking.
-PK: `uuid`. FK: `creditCardId`. Fields: `periodStart`, `periodEnd`, `statementDate`, `dueDate`, `totalDueMinorUnits`, `minimumDueMinorUnits`, `previousBalanceMinorUnits`, `paymentsMinorUnits`, `purchasesMinorUnits`, `feesMinorUnits`, `taxesMinorUnits`, `closingBalanceMinorUnits`, `source` (`manual` | `import`), `reconciled` bool. Amounts: integer minor units. Lifecycle: immutable once reconciled except by correction entry. Sync: no (local). Sensitive: amounts only.
+**CardStatement** — One billing cycle for one card. Purpose: reconciliation + due tracking. Statement *totals* live here; individual statement lines are `ExtractionCandidate`s (imported) or `FinancialTransaction`s (confirmed) — never duplicated as statement rows.
+PK: `uuid`. FKs: `creditCardId`, `importDocumentId` (nullable — set when the statement was produced by document import; null for manually entered statements in Module 6). Relationship chain: `ImportDocument` (0..1 statement summary per document) → `CardStatement` → `CreditCard`; an EMI schedule is **not** owned by a statement (it belongs to the card and spans cycles — see `EmiSchedule`). Fields: `issuer`, `maskedCardIdentity` (last 4 digits only — never a full number), `periodStart`, `periodEnd`, `statementDate`, `dueDate`, `totalDueMinorUnits`, `minimumDueMinorUnits`, `creditLimitMinorUnits` (nullable — when present on the document), `availableLimitMinorUnits` (nullable), `previousBalanceMinorUnits`, `closingBalanceMinorUnits`, `paymentsMinorUnits`, `purchasesMinorUnits`, `refundsMinorUnits`, `feesMinorUnits`, `taxesMinorUnits`, `source` (`manual` | `import`), `reconciliationStatus` (`unreconciled` | `reconciled` | `discrepancy` — §9.6), `reconciliationNote` (nullable). Amounts: integer minor units. Lifecycle: immutable once reconciled except by correction entry (an `adjustment` transaction linked via `relatedTransactionId`, never by editing totals in place). Sync: no (local). Sensitive: **yes** — amounts + last-4 only; never store full card numbers, CVV, PIN or PDF passwords.
 
-**EmiSchedule** — Instalment plan. Purpose: EMI tracking + reminders.
-PK: `uuid`. FKs: `creditCardId` (nullable — card EMIs) or `accountId` (loan EMIs), `transactionId` (originating purchase, nullable). Fields: `title`, `totalMinorUnits`, `instalmentMinorUnits`, `totalInstalments`, `paidInstalments`, `startDate`, `dueDayOfMonth`, `interestRatePercent` (nullable, display only — no interest computation in V1), `isActive`. Amounts: integer minor units. Lifecycle: completes when instalments are exhausted; each due instalment links to a transaction when paid. Sync: no. Sensitive: no.
+**BankStatementSummary** — Document-level summary/reconciliation record for one bank statement. Purpose: hold statement totals and reconciliation state separately from extracted line candidates, so totals are never double-counted as transactions.
+PK: `uuid`. FKs: `importDocumentId` (1:1 — the summary references its document; the document does not reference the summary, avoiding a circular dependency), `accountId` (nullable until the document is classified to an account). Fields: `issuer`, `maskedAccountIdentity` (last 4 digits only), `accountType` (nullable), `periodStart`, `periodEnd`, `openingBalanceMinorUnits`, `closingBalanceMinorUnits`, `totalDebitsMinorUnits`, `totalCreditsMinorUnits`, `feesMinorUnits`, `taxesMinorUnits`, `lineCount`, `reconciliationStatus` (`unreconciled` | `reconciled` | `discrepancy`), `reconciliationNote` (nullable). Amounts: integer minor units. Lifecycle: created with its document's classification; immutable once reconciled except by correction. Sync: no. Sensitive: **yes** — balances + last-4 only.
+
+**EmiSchedule** — Instalment plan. Purpose: EMI tracking + reminders. An EMI spans multiple billing cycles: it belongs to its card (or loan account), not to any one statement.
+PK: `uuid`. FKs: `creditCardId` (nullable — card EMIs) or `accountId` (nullable — loan EMIs; exactly one of the two is set), `originTransactionId` (nullable — the originating purchase). Fields: `title`, `totalMinorUnits`, `instalmentMinorUnits`, `totalInstalments`, `paidInstalments`, `startDate`, `dueDayOfMonth`, `interestRatePercent` (nullable, display only — no interest computation in V1), `isActive`. Individual instalment charges are `FinancialTransaction`s with `emiScheduleId` set; a statement *contains* instalment charges only by date range, never by ownership. Amounts: integer minor units. Lifecycle: completes when instalments are exhausted; each due instalment links to a transaction when paid. Sync: no. Sensitive: no.
 
 **ImportBatch** — One import session. Purpose: history, undo, recovery.
 PK: `uuid`. Fields: `sourceKind` (`camera` | `gallery` | `pdf` | `csv` | `share`), `createdAt`, `state` (`in_progress` | `review` | `completed` | `partially_failed` | `discarded`), `fileCount`, `confirmedCount`, `duplicateCount`. Lifecycle: retained as history; discarding a batch discards its unconfirmed candidates and (per retention setting) its documents. Sync: no. Sensitive: batch metadata only.
 
-**ImportDocument** — One source file/text. Purpose: provenance, re-extraction, audit.
-PK: `uuid`. FKs: `batchId`, `accountId` (nullable, once classified), `creditCardId` (nullable). Fields: `documentKind` (see §9.2), `originalFileName`, `storedPath` (app-private storage, nullable for text shares), `mimeType`, `pageCount`, `classification`, `classificationConfidence`, `issuer`, `statementPeriodStart/End`, `openingBalanceMinorUnits`, `closingBalanceMinorUnits` (statement docs), `passwordProtected` bool (password itself never stored), `retentionExpiresAt` (nullable), `state`. Amounts: integer minor units where present. Lifecycle: retained per retention setting (§9.7); deletion removes the stored file and the row. Sync: **never** — original documents are never uploaded to Sheets (§8.7). Sensitive: **yes** — financial documents; app-private storage only.
+**ImportDocument** — One source file/text. Purpose: provenance, re-extraction, audit. This row carries *document-level* metadata only: statement totals live in `BankStatementSummary` / `CardStatement`, and individual lines live in `ExtractionCandidate`s — the three levels are never mixed, so statement totals can never be double-counted as transactions.
+PK: `uuid`. FKs: `batchId`, `accountId` (nullable), `creditCardId` (nullable). **Mutual-exclusion rule (normative):** once classified, exactly one of `accountId`/`creditCardId` is set for statement documents (bank statement → `accountId`; card statement → `creditCardId`); both null means unclassified (receipts/images/text may stay unclassified to an account until review assigns one, or remain null if the user imports without an account link); both set is invalid and must be rejected by the import service validation and covered by a test. Fields: `documentKind` (see §9.2), `originalFileName`, `storedPath` (app-private storage, nullable for text shares), `mimeType`, `pageCount`, `classification`, `classificationConfidence`, `issuer`, `statementPeriodStart/End` (classification hints only — authoritative period lives on the summary entity), `passwordProtected` bool (password itself never stored), `contentHash` (for idempotent re-import detection), `retentionExpiresAt` (nullable), `state`. The document does **not** carry opening/closing balances or statement totals (those are summary fields), and does **not** reference its summary row (summaries reference the document, avoiding a circular foreign key). Amounts: none on this row. Lifecycle: retained per retention setting (§9.7); deletion removes the stored file and the row. Sync: **never** — original documents are never uploaded to Sheets (§8.7). Sensitive: **yes** — financial documents; app-private storage only. Never store full card numbers, CVV, PIN or PDF passwords anywhere in the import model.
 
 **ExtractionCandidate** — One parsed transaction awaiting review. Purpose: human confirmation gate.
-PK: `uuid`. FKs: `documentId`, `matchedTransactionId` (nullable — duplicate match), `confirmedTransactionId` (nullable). Fields: per-field values (`occurredAt`, `description`, `debitMinorUnits`/`creditMinorUnits`, `reference`, `channel`, `runningBalanceMinorUnits`) each with `confidence` (0–1) and `source` (`extracted` | `corrected` | `inferred`), `duplicateScore`, `duplicateReason`, `state` (`pending` | `confirmed` | `duplicate_skipped` | `discarded`), `reviewedAt`. Amounts: integer minor units. Lifecycle: confirmed candidates create FinancialTransactions; discarded candidates retained for audit until batch retention expires. Sync: no. Sensitive: **yes** — extracted financial data; same handling as transactions.
+PK: `uuid`. FKs: `documentId`, `matchedTransactionId` (nullable — duplicate match), `confirmedTransactionId` (nullable). Candidates are *line items only*: statement totals (opening/closing balances, total due, total purchases/payments) are never candidates — they live on `BankStatementSummary`/`CardStatement` (§6). Creating a candidate from a totals row is a modelling error and must be prevented by the extraction service (totals are parsed into the summary entity, lines into candidates). Fields: per-field values (`occurredAt`, `description`, `debitMinorUnits`/`creditMinorUnits`, `reference`, `channel`, `runningBalanceMinorUnits`) each with `confidence` (0–1) and `source` (`extracted` | `corrected` | `inferred`), `duplicateScore`, `duplicateReason`, `state` (`pending` | `confirmed` | `duplicate_skipped` | `discarded`), `reviewedAt`. Amounts: integer minor units. Lifecycle: confirmed candidates create FinancialTransactions; discarded candidates retained for audit until batch retention expires. Sync: no. Sensitive: **yes** — extracted financial data; same handling as transactions.
 
 **Reminder / NotificationRecord** — Scheduled and delivered reminders. Purpose: bills, due dates, budget alerts, sync outcomes.
 PK: `uuid`. FKs: polymorphic target (`targetKind` + `targetUuid`: rule / card / EMI / budget). Fields: `kind` (`bill_due` | `card_due` | `emi_due` | `budget_alert` | `sync`), `scheduledFor`, `deliveredAt`, `state` (`scheduled` | `delivered` | `dismissed` | `acted`), `title`, `message`. Lifecycle: delivered records retained as in-app history (existing Notifications behaviour). Sync: no. Sensitive: titles/messages must not contain card numbers or amounts beyond what the user already sees in-app — masking rules apply (§10).
@@ -325,22 +339,22 @@ PK: `uuid`. FKs: polymorphic target (`targetKind` + `targetUuid`: rule / card / 
 **SavingsGoal** — A target with contributions.
 PK: `uuid`. Fields: `name`, `targetMinorUnits`, `currencyCode`, `targetDate` (nullable), `icon`, `isArchived`. Relationships: 1:N GoalContributions. Lifecycle: archive on completion/abandon; contributions retained. Sync: no. Sensitive: no.
 
-**GoalContribution** — Money moved toward a goal.
-PK: `uuid`. FKs: `goalId`, `accountId` (source account), `transactionId` (nullable — the backing transfer, when contributions move real money). Fields: `amountMinorUnits`, `occurredAt`, `note`. Amounts: integer minor units. Lifecycle: follows its goal; deleting a contribution does not delete the backing transaction (it unlinks it). Sync: no. Sensitive: no.
+**GoalContribution** — Money allocated to, or actually moved for, a goal. The two kinds are distinct and must never be conflated: a *virtual allocation* changes only the goal's progress (no account balance moves), while a *transfer contribution* moves real money between accounts.
+PK: `uuid`. FKs: `goalId`, `accountId` (nullable — required iff `contributionKind = transfer`, the source account), `transactionId` (nullable — required iff `contributionKind = transfer`, the backing `transfer` transaction). Fields: `contributionKind` (`allocation` | `transfer`), `amountMinorUnits`, `occurredAt`, `note`. Amounts: integer minor units. Lifecycle: follows its goal; deleting a contribution does not delete the backing transaction (it unlinks it; the transfer itself is deleted only through the normal transaction delete path). Reporting: allocations count toward goal progress only and never toward income/expense or account balances; transfer contributions count toward goal progress *and* move balances via their backing transaction exactly once (the contribution row itself is never also counted as a transaction). Sync: no. Sensitive: no.
 
-**NetWorthAsset / NetWorthLiability** — Manual holdings outside accounts (e.g. property, gold, personal loans).
+**NetWorthAsset / NetWorthLiability** — Manual holdings outside accounts (e.g. property, gold, personal loans). These are standalone records with **no relationship to `Account`**: account-backed net worth derives from ledger balances, and manual holdings are added/subtracted separately. Never link a manual holding to an account row (that would double-count it).
 PK: `uuid`. Fields: `name`, `kind`, `valueMinorUnits`, `currencyCode`, `valuedAt`, `isArchived`. Amounts: integer minor units. Lifecycle: archive only. Sync: no. Sensitive: values only.
 
 **Person / Group / GroupMember** — Split-and-settle placeholders (Module 13 only).
 Person PK: `uuid`; fields `name`, `contactHint` (nullable — no contact import in V1), `isSelf`. Group PK: `uuid`; fields `name`, `kind`. GroupMember: (`groupId`, `personId`). Lifecycle: archiving a person/group preserves history. Sync: no (split data is local-only in V1 design; sync of split data is **[Unresolved]**). Sensitive: names only. **Do not build these entities before Module 13** except as foreign-key placeholders if Module 1 needs them — it does not.
 
 **AppSettings** — Single-row application configuration (replaces the legacy `app_settings` concept).
-PK: fixed id `1`. Fields: `currencyCode` (default `INR`), `defaultAccountId` (nullable FK), `themeMode` (`system` | `light` | `dark` — mirrors current system behaviour, user choice added in Module 12), `appLockEnabled`, `documentRetentionDays`, `defaultReminderDays`, `sheetsBackupEnabled`, `setupCompleted`. Lifecycle: one row, updated in place, never deleted. Sync: no — settings are device-local (Sheets backup on/off is a local choice; the spreadsheet identity itself stays in the existing backend resolution flow). Sensitive: no secrets (no tokens, no passwords).
+PK: fixed id `1`. Fields: `currencyCode` (default `INR`), `defaultAccountId` (nullable FK → `Account`, cardinality 0..1 — at most one default account, and none is valid), `themeMode` (`system` | `light` | `dark` — mirrors current system behaviour, user choice added in Module 12), `appLockEnabled`, `documentRetentionDays`, `defaultReminderDays`, `sheetsBackupEnabled`, `setupCompleted`. Lifecycle: one row, updated in place, never deleted. Sync: no — settings are device-local (Sheets backup on/off is a local choice; the spreadsheet identity itself stays in the existing backend resolution flow). Sensitive: no secrets (no tokens, no passwords).
 
 ### 5.3 Identity and relationship rules (normative)
 
 1. Every synchronisable/imported record has a `uuid` v4. Integer ids are internal only.
-2. Relationships use stable ids/UUIDs — never display names. (Current `category` text coupling is removed by the Module 1 reset; see §7.6.)
+2. Relationships use stable ids/UUIDs — never display names. (Current `category` text coupling is removed by the Module 1 fresh-database switch; see §7.)
 3. Built-in categories keep their existing string ids (`food`, …). Custom categories get stable ids at creation (UUID-based or `custom_<uuid>` — exact form is a Module 1 implementation detail, recorded in the Module 1 plan, not here).
 4. Archival, not deletion, for categories, accounts, merchants, goals and people/groups once referenced.
 5. `syncRevision`/`syncStatus` exist only on entities that sync (transactions in V1; possibly categories/accounts later only under §8 rules). They are never part of any external format.
@@ -368,34 +382,65 @@ Rules (normative for Modules 1+):
 
 - **Initial currency: INR only [Approved].** `currencyCode = "INR"`, 100 paise = ₹1. The data model carries `currencyCode` on every money-bearing row so a future currency choice does not require a schema redesign — but no multi-currency behaviour, exchange rates, or currency picker is built in V1.
 - **Formatting:** `Money → display string` uses minor-unit integer division/modulo (e.g. `125075 → ₹1,250.75`, Indian digit grouping per locale conventions). No `double` intermediate. The `intl` package is *not* currently a dependency; whether to add it for grouping/symbols is a Module 1 implementation choice to be recorded, not decided here. **[Unresolved]** only in the sense of package selection, not of the integer rule.
-- **Parsing (user input):** parse the decimal *string* directly to minor units: split on the decimal separator, validate digits, pad/truncate the fractional part to the currency's minor digits with **round-half-away-from-zero** on any excess digit, reject empty/negative/malformed input with a field error. Never parse via `double` (`double.parse("1250.75") * 100` is forbidden by this blueprint).
-- **Rounding:** all rounding happens at input/parse boundaries and at Sheets import boundaries (§6.5), using the rule above, and is unit-tested. No rounding inside totals: totals are exact integer sums.
-- **Input validation:** amount field accepts digits + one decimal separator; max 2 fractional digits for INR (extra digits round per the rule above, with the rounded value shown back to the user before save — the confirm screen must show the *stored* value, not the typed string).
+- **Parsing (user input):** parse the decimal *string* directly to minor units: split on the decimal separator, validate digits, pad the fractional part to the currency's minor digits. **For normal manual INR input, more than 2 fractional digits are rejected** with a field error ("Amounts support up to 2 decimal places") — the user must correct the value; the app must not silently round what the user typed, because silent rounding contradicts the displayed "maximum two decimal places" rule and can change the amount the user intended. There is exactly one exception, and it is a *separate, documented* rule: **importer normalisation** (§9.2) — values arriving from documents/CSVs/Sheets with more than 2 fractional digits are normalised by round-half-away-from-zero at the import parse boundary, and the original raw string is retained on the candidate for audit. Never parse via `double` (`double.parse("1250.75") * 100` is forbidden by this blueprint).
+- **Rounding:** rounding happens **only** at the importer-normalisation boundary (§9.2) and at the Sheets-import boundary (§6.5), using round-half-away-from-zero, and is unit-tested. There is no rounding inside totals: totals are exact integer sums. Manual input is never rounded (it is validated and rejected if over-precise, above).
 
-### 6.3 Posting rules — the ledger
+### 6.3 Posting rules — the ledger (LedgerAccount model, decided)
 
-**[Proposed]** Double-entry-lite: every `FinancialTransaction` writes two or more `Posting` rows in one database transaction. Postings for one transaction always sum to zero when signed by direction (`debit = +`, `credit = −`, per account type — see the table; the invariant is checked in tests, not by convention).
+**[Decided in review round 2 — the counterpart representation is no longer unresolved.]** The ledger has exactly one posting target type: `LedgerAccount` (§5.2). A `Posting` references one valid `LedgerAccount`, carries a distinct `direction` (`debit` | `credit`), and an always-positive integer `amountMinorUnits`. There is no signed-amount representation and no separate "clearing" concept: the counterpart of every user-account movement is a ledger account — a system expense/income ledger account for a category, the opening-equity ledger account, the adjustments ledger account, or another user ledger account (transfers, card payments).
 
-Sign convention (state it once, use it everywhere): for **asset** accounts (bank/cash/wallet), a debit *increases* the balance and a credit *decreases* it. For **liability** accounts (credit cards), a credit *increases* what is owed and a debit *decreases* it. Balances are computed as: asset balance = sum(debits) − sum(credits); liability owed = sum(credits) − sum(debits). The posting table stores `direction` + positive amount; the service layer applies the account-kind sign rule. (Implementation may alternatively store signed amounts internally — the invariant and the table above are what matter; the Module 1 plan must pick one and record it.)
+**Two separate rules — do not conflate them:**
 
-| Case | Postings (account ← direction) | Reporting effect |
-|---|---|---|
-| A. Bank expense ₹500 | Bank ← credit 500; Expense clearing ← debit 500* | Bank −500; expense +500 |
-| B. Cash expense ₹200 | Cash ← credit 200; Expense clearing ← debit 200* | Cash −200; expense +200 |
-| C. Income ₹10,000 to Bank | Bank ← debit 10,000; Income clearing ← credit 10,000* | Bank +10,000; income +10,000 |
-| D. Transfer ₹1,000 Bank → Cash | Bank ← credit 1,000; Cash ← debit 1,000; `transferGroupId` shared | Bank −1,000; Cash +1,000; income/expense unchanged |
-| E. Credit-card purchase ₹2,000 | Card liability ← credit 2,000; Expense clearing ← debit 2,000* | Owed +2,000; expense +2,000; bank unchanged |
-| F. Card bill payment ₹2,000 Bank → Card | Bank ← credit 2,000; Card liability ← debit 2,000; kind `card_payment` | Bank −2,000; owed −2,000; **not** a new expense |
-| G. Refund ₹500 (original expense) | Reverse postings of the original (or offsetting postings) + `reversesTransactionId`; kind `refund` | Expense −500; account +500 (to the original account) |
+1. **Balancing invariant (per financial event):** `SUM(debit posting amounts) == SUM(credit posting amounts)` over all postings of one `FinancialTransaction`. This holds for every event, with no exceptions. It is enforced by the posting service (which constructs postings, never accepts arbitrary posting lists from callers) and by a test that replays every rule below.
+2. **Normal-balance rules (per ledger account, for reading balances):** each ledger account kind has a normal balance side. A ledger account's balance is the signed sum of its postings *on its normal side minus the opposite side*:
+   - `user_asset` and `system_expense`: normal balance **debit**. Balance = debits − credits.
+   - `user_liability`, `system_income`, `system_opening_equity`, `system_adjustment`: normal balance **credit**. Balance = credits − debits.
+   - A user-facing asset "balance" is its ledger account's normal balance; a card "owed" figure is its liability ledger account's normal balance. System ledger accounts have balances too (they are what make reporting work), but they are never displayed as accounts.
 
-\* "Clearing" is a conceptual counterpart, not a user-visible account: in the proposed model the expense/income side is carried by the transaction's `kind` + `categoryId`, and the second posting targets a per-transaction internal counterpart that reporting aggregates by kind/category. The Module 1 implementation must decide between (i) a real system "clearing/equity" account row, or (ii) postings only for real accounts with reporting derived from transaction kind — and record the choice. Either way, **the invariant is**: every transaction's real-account postings are fully determined by `kind` + accounts, and reporting never double-counts a payment as an expense.
+**Ledger account mapping (how the entities connect):**
 
-**Transfers and card payments are kinds, not categories.** They carry no expense/income category (or a fixed system category id that reporting explicitly excludes). Refunds carry the original category and link to the original transaction.
+- Each user `Account` maps 1:1 to a `LedgerAccount` (`user_asset` for bank/cash/wallet/other-asset, `user_liability` for credit-card liability), via `LedgerAccount.userAccountId`. The mapping is one-directional — `Account` carries no ledger foreign key, so account creation cannot deadlock on insertion order (§6.4).
+- Each `Category` maps 1:1 to a `LedgerAccount` (`system_expense` if the category kind is expense/both-expense, `system_income` if income) via `LedgerAccount.categoryId`. A category usable for both expense and income maps to *two* system ledger accounts (one per side); the posting service picks by transaction kind.
+- `opening_equity` is a single system ledger account (normal balance credit). `adjustments` is a single system ledger account (normal balance credit).
 
-### 6.4 Balances
+**Posting examples — stated with actual entity relationships.** In each case the `FinancialTransaction` row carries the kind/category/amount, and the postings below are the complete posting set (amounts positive, directions as shown, sums equal):
 
-- **Derived, always.** An account balance is `SUM(postings)` for that account (with the §6.3 sign rule). There is no mutable `balance` column to drift out of sync.
-- **Opening balance** is an opening posting from a system equity counterpart dated at account creation (or the account's `openingDate`). Editing an opening balance = replacing that posting in a transaction, with history.
+| Case | FinancialTransaction | Postings (LedgerAccount ← direction, amount) | Effect |
+|---|---|---|---|
+| A. Bank expense ₹500 (Food) | kind `expense`, categoryId `food`, amount 50000 | `expense:food` ← debit 50000; Bank's ledger account ← credit 50000 | Bank balance −500; Food expense +500 |
+| B. Cash expense ₹200 (Travel) | kind `expense`, categoryId `travel`, amount 20000 | `expense:travel` ← debit 20000; Cash's ledger account ← credit 20000 | Cash −200; Travel expense +200 |
+| C. Income ₹10,000 to Bank (Salary) | kind `income`, categoryId `salary`, amount 1000000 | Bank's ledger account ← debit 1000000; `income:salary` ← credit 1000000 | Bank +10,000; Salary income +10,000 |
+| D. Transfer ₹1,000 Bank → Cash | kind `transfer`, `sourceAccountId` = Bank, `destinationAccountId` = Cash, amount 100000, no category | Cash's ledger account ← debit 100000; Bank's ledger account ← credit 100000 | Bank −1,000; Cash +1,000; income/expense unchanged. **One transaction, two postings, no transfer group id.** |
+| E. Credit-card purchase ₹2,000 (Shopping) | kind `expense`, categoryId `shopping`, amount 200000; the *payment* account is the card's liability account | `expense:shopping` ← debit 200000; Card's liability ledger account ← credit 200000 | Owed +2,000; Shopping expense +2,000; bank unchanged |
+| F. Card bill payment ₹2,000 Bank → Card | kind `card_payment`, `sourceAccountId` = Bank, `destinationAccountId` = Card account, amount 200000, no category | Card's liability ledger account ← debit 200000; Bank's ledger account ← credit 200000 | Bank −2,000; owed −2,000; **not** a new expense |
+| G. Refund ₹500 (original Food expense, Bank) | kind `refund`, `reversesTransactionId` = original, amount 50000, categoryId `food` | Bank's ledger account ← debit 50000; `expense:food` ← credit 50000 | Bank +500; Food expense −500 (mirrors the original postings' directions) |
+
+**Transfers and card payments are kinds, not categories.** They carry no expense/income category. Refunds carry the original category and link to the original transaction.
+
+**Transfer design (chosen, single design):** one `FinancialTransaction` (kind `transfer`), exactly two postings, `sourceAccountId` + `destinationAccountId` on the transaction. Same-currency enforcement: both accounts must share `currencyCode` (in V1 all are INR; the check is still written and tested). A transfer to the same account is rejected. There is no `transferGroupId` in the data model, the Sheets contract, or any API: the single transaction row *is* the group.
+
+**Refund rules (normative):**
+
+- A refund *must* set `reversesTransactionId` to an active `expense` or `income` transaction (refunding a transfer, card payment, opening balance or adjustment is rejected — those are corrected via `adjustment`, below).
+- **Partial refunds** are allowed: any amount from 1 paisa up to the maximum refundable amount.
+- **Multiple refunds** against one original are allowed; each is its own `refund` transaction linked to the same original.
+- **Maximum refundable amount** = original `amountMinorUnits` − SUM(`amountMinorUnits` of all active, non-deleted refunds with `reversesTransactionId` = original). An over-refund is rejected by the refund service (validation + test). Deleting (soft) a refund restores refundable capacity.
+- **Refund destination account** defaults to the original transaction's account (the account whose ledger was credited/debited by the original). If the money actually returned elsewhere, the refund transaction's postings target that destination account's ledger account instead, and the destination is recorded explicitly on the refund (the refund carries the destination account via its postings' ledger accounts; the UI requires the user to confirm a non-default destination).
+- **Reporting:** refunds net against the original category in the *refund's* period (occurredAt), never by restating prior periods; a refund never creates income. Fully-refunded transactions remain visible in history with their refunds linked.
+- **Refund postings** mirror the original transaction's postings with directions reversed, for the refund amount, against the same category ledger account and the destination account's ledger account.
+
+**Adjustment semantics (normative):** kind `adjustment` corrects a balance or a prior event without pretending to be income/expense. An adjustment *must* carry `adjustmentReason` and *must* name a counterpart: either a category ledger account (when correcting a categorised amount — then it adjusts that category's reporting totals) or the system `adjustments` ledger account (pure balance correction). Its postings are always two: the affected account's ledger account and the counterpart ledger account. Adjustments that correct another transaction set `relatedTransactionId`. Adjustments are reported separately from income/expense unless their counterpart is a category ledger account. An adjustment is never used to fabricate income, and never used where a refund is the correct kind.
+
+**Reversal semantics:** kind `reversal` fully negates a prior transaction: postings mirror the original with directions reversed for the full amount, `reversesTransactionId` is set, and the original is marked reversed (it stays in history; it is not deleted). Reversals apply to opening balances and adjustments; expense/income corrections that are partial use refunds/adjustments instead (above).
+
+### 6.4 Balances and opening balances
+
+- **Derived, always.** A ledger account's balance is computed from its postings using its normal-balance rule (§6.3). A user account's balance is its ledger account's balance. There is no mutable `balance` column to drift out of sync.
+- **Opening balance is a dedicated financial event.** Creating an account with an opening balance writes one `FinancialTransaction` of kind `opening_balance` (occurredAt = the opening date, amount = the opening amount, no category) with exactly two postings: for a positive opening balance on an asset account, debit the account's ledger account and credit `opening_equity`; for a liability account (e.g. an existing card balance owed), credit the liability ledger account and debit `opening_equity`; a negative asset opening balance reverses the directions. The transaction gets a `TransactionHistory` row (`created`), like every other event. There is no `openingPostingId` on `Account` and no separate opening-balance field anywhere.
+- **Insertion order (no circular dependencies):** inside one database transaction: (1) insert the `Account` row; (2) insert its `LedgerAccount` row (`userAccountId` → the account); (3) insert the `opening_balance` `FinancialTransaction`; (4) insert its two postings; (5) insert the history row. No step references a row that does not exist yet, and no foreign key points back at a row created later — the mapping is one-directional (`LedgerAccount` → `Account`), and postings point at already-inserted transactions and ledger accounts.
+- **Editing an opening balance (before any other activity on the account):** replace the opening transaction's postings atomically (same transaction, new postings + history row). This is the only case where opening postings are rewritten.
+- **Correcting an opening balance (after activity exists):** never rewrite history. Post an `adjustment` transaction with `adjustmentReason = opening_balance_correction` and `relatedTransactionId` = the opening transaction, for the delta, with postings that move the account ledger account by the delta against `opening_equity`. The original opening transaction stays untouched and auditable.
+- **Reversing an opening balance:** post a `reversal` transaction mirroring the opening postings in full, linked via `reversesTransactionId`, and mark the original reversed. The original row is never deleted. An account with activity may have its opening balance reversed only via this path (the service rejects direct deletion of an opening transaction once other postings exist for the account).
 - **Cached balances are not in V1** unless profiling proves a need; if added later, the cache must be updated in the same DB transaction as the postings and covered by a reconciliation test. **[Proposed]**
 - **Archived accounts** keep computing balances; they are excluded from pickers and from "available balance" totals on Home (which sums asset accounts only, excluding credit-card liabilities — shown separately as "owed").
 
@@ -404,8 +449,8 @@ Sign convention (state it once, use it everywhere): for **asset** accounts (bank
 - **Edit:** read transaction + postings, write new postings, append a `TransactionHistory` row, bump `syncRevision`, set `syncStatus = pending` — all in **one** Drift transaction. If any step fails, nothing is written.
 - **Delete (soft):** set `deleted`, bump revision, mark pending — in one transaction. Postings are retained but excluded from balances/reporting by the `deleted` flag (the exclusion is a query predicate, not a posting deletion, so restore is exact).
 - **Restore:** clear `deleted`, bump revision, mark pending — one transaction.
-- **Category rename/retire:** with stable ids, rename is a Category-row update only — no transaction rewriting (the PR #2 propagation machinery becomes unnecessary after the reset). Retire = archive.
-- **Sheets conversion (§6.5 boundary):** local paise → sheet decimal happens only in the sync adapter (`paise / 100` as a formatted decimal string with exactly 2 fraction digits, produced from integers — never via `double` division in a way that can produce `1250.749999`). Sheet → local (import/reconciliation) parses the decimal string per §6.2. Both directions are unit-tested with values like `0`, `1`, `99`, `100`, `125075`, `999999999999` paise.
+- **Category rename/retire:** with stable ids, rename is a Category-row update only — no transaction rewriting (the PR #2 propagation machinery becomes unnecessary after the fresh-database switch). Retire = archive.
+- **Sheets conversion (external boundary only, §8.5):** local paise → sheet numeric cell happens only in the sync adapter, and **floating-point arithmetic is prohibited for all internal totals and balance calculations** — totals and balances are integer sums over postings; `double` appears nowhere in domain, repository or reporting code. At the Sheets boundary the adapter converts integer paise to a numeric spreadsheet cell value without any `double` division in application code (implementation detail for Module 1: produce the cell as a JSON number from the integer-derived decimal representation, with the value type asserted NUMBER in tests — see §8.5). Sheet → local (import/reconciliation) parses the numeric cell value back to paise via decimal-string parsing per §6.2 (importer normalisation rule), never via `double` arithmetic.
 - **No partial updates:** any service that touches more than one table (transaction + postings + history; rename + affected rows; goal contribution + transfer) must run inside one Drift `transaction {}`. The existing codebase already uses this pattern for renames; extend it as the rule.
 
 ### 6.6 Cross-currency boundaries [Approved scope]
@@ -416,34 +461,47 @@ Sign convention (state it once, use it everywhere): for **asset** accounts (bank
 
 ### 6.7 Why this model (and why not full accounting)
 
-Full double-entry accounting (chart of accounts, journals, trial balance) is disproportionate for a single-user app and would slow every module. Double-entry-lite keeps the one property that matters — *balances always reconcile to events, by construction* — with two tables and one invariant. It is also exactly the model SpendMate's split/posting design and the current app's `syncRevision` discipline already gesture toward, without importing their complexity (no multi-user, no Apps Script, no worlds).
+Full double-entry accounting (chart of accounts, journals, trial balance) is disproportionate for a single-user app and would slow every module. The `LedgerAccount` model keeps the one property that matters — *balances always reconcile to events, by construction* — with three small tables and one invariant, and it answers the counterpart question with real rows instead of a convention. It is also exactly the model SpendMate's split/posting design and the current app's `syncRevision` discipline already gesture toward, without importing their complexity (no multi-user, no Apps Script, no worlds).
 
 ---
 
-## 7. Database reset decision
+## 7. Fresh database strategy
 
 **[Approved — user-confirmed]** The existing application data is disposable testing data. The architecture targets a clean new financial data model.
 
 **Nothing is reset in this task.** No schema version is changed, no migration code is removed, no local or remote data is deleted here.
 
-### 7.1 Proposed reset strategy (Module 1 — requires explicit user approval at implementation time)
+### 7.1 Safe clean-start strategy [Decided in review round 2 — replaces the earlier reset proposal]
 
-1. **Explicit, separate, confirmed action.** The reset is a deliberate step in the Module 1 implementation plan, approved by the user in that module's briefing — never a side effect of an upgrade, never triggered by opening the app, never automatic in a production build.
-2. **Local reset mechanics [Proposed]:** delete the local Drift database file(s) (and any import-document storage) on the user's device/emulator, then create the new baseline schema via `onCreate` at the new schema version. The new baseline is a *fresh* schema (see §7.3), not a migration chain from v7.
-3. **Migration code:** the existing v2–v7 migration chain is retained until the reset is approved and executed; the Module 1 PR removes/replaces it *in the same change* as the reset, with the removal called out in the PR description. Until then, do not remove it (this task does not).
-4. **What happens to the test spreadsheet [Proposed, needs user confirmation]:** the existing "Expense Tracker" spreadsheet is left **completely untouched** — no rows deleted, no worksheets removed, no new spreadsheet created automatically. The new model writes to a **new spreadsheet** (resolved by the existing Drive find-or-create flow under a distinct identity — exact mechanism is a Module 1 detail) OR to the same spreadsheet under the §8 versioned extension — the choice is **[Unresolved, §15]** and must be decided *before* Module 1 writes anything. The old spreadsheet remains readable as an archive either way.
-5. **Rollback:** before reset, the user is offered an export of the existing local data (CSV via the Module 3 design, or at minimum the existing Sheets copy, which already exists remotely). The reset step must verify the Sheets copy is reachable/complete before deleting local data, or record the user's explicit waiver.
-6. **Production guard:** the reset path must be gated so it cannot run on a production install without the explicit in-app confirmation flow (e.g. a dedicated settings action behind a confirmation dialog + typed confirmation for destructive actions). No `deleteDatabase` call on app start, ever.
+The current application uses a global database singleton (`appDatabase`, `lib/core/database/database_provider.dart`) opening a Drift database named `expense_tracker` at schema v7. Deleting or resetting that live database would be destructive and unsafe. The decided approach is a **fresh database identity**, not a reset of the existing one:
 
-### 7.2 Implications
+1. **New database identity/name: `expense_tracker_v2`.** Module 1 introduces the new database under this name. The new schema is created with `onCreate` at the new schema version (exact number set in Module 1, continuing the sequence — e.g. 8). There is **no migration from v7**: the v2 database is a different SQLite file, so the old migration chain is simply never run against it.
+2. **Old v7 database left untouched as an archive/fallback.** The `expense_tracker` database file is never opened by the new code, never modified, and never deleted during normal operation. It remains on the device until an **explicit, user-approved cleanup action** (a dedicated, confirmed settings action, proposed for Module 12 polish — not Module 1) removes it, and only after the validation in §7.3 has passed. Cleanup is never automatic and never part of startup.
+3. **No deletion of a live/open SQLite database.** Deletion, if it ever happens, runs only when no connection to that file is open, after explicit confirmation, and from a code path that cannot run during normal startup. The singleton is replaced by an injectable database provider/factory (the new code constructs/open the v2 database once, explicitly, at startup; the old file is never opened, so there is nothing live to delete).
+4. **No automatic destructive reset during normal startup.** First launch with the new code: if the `expense_tracker_v2` file does not exist, create it via `onCreate`; if it exists, open it normally. Startup never deletes, never re-creates, and never re-initialises an existing v2 database. A "start fresh" action, if ever offered, is a separate confirmed user action that targets only the v2 file and requires the same explicit confirmation as any destructive action.
+5. **Migration code:** the existing v2–v7 migration chain is retained until Module 1 lands (it still describes the old database); the Module 1 PR removes it *in the same change* as the fresh-database switch, with the removal called out in the PR description, since no code path will open the old database afterwards. Until then, do not remove it (this task does not).
+6. **Paired with the Sheets V2 identity (§8.2):** new local database + new V2 spreadsheet; old local database + old V1 spreadsheet both preserved as archives. The two archives are independent: deleting one never implies deleting the other.
 
-- Historical test transactions, categories and notification rows are discarded locally. That is the point of the reset and is approved *as a category of action* by the user; the *execution* still needs per-module approval.
-- Any device that has not run the reset keeps the old schema and old sync behaviour until it updates — the Sheets contract (§8) is what keeps old and new clients from corrupting each other's data: old rows remain valid v1 rows; new rows use the versioned extension.
-- The migration test for v6→v7 stays in the suite until the reset PR; after the reset it is superseded by new-schema tests (recorded in that PR, not deleted silently).
+### 7.2 Consequences
 
-### 7.3 Schema versioning after reset [Proposed]
+- Historical test transactions, categories and notification rows are inaccessible in the new app (they live in the untouched old file). That is the approved outcome for disposable test data; the *execution* (Module 1) still needs per-module approval, and §7.3 validation must pass first.
+- Disk usage temporarily includes both database files until explicit cleanup. Import-document storage from the old app does not exist (no import feature yet), so no document files need migrating.
+- Any device that has not updated keeps the old app + old database + V1 sync behaviour until it updates — the separate V2 spreadsheet identity (§8.2) is what keeps old and new clients from corrupting each other's data: they never write to the same spreadsheet.
+- Rollback/fallback: because the old file is untouched, the previous app version can still open it (reinstalling the old build restores the old app state). This fallback lasts until explicit cleanup.
+- The migration test for v6→v7 stays in the suite until the Module 1 PR; after the fresh-database switch it is superseded by new-schema tests (recorded in that PR, not deleted silently).
 
-The new baseline starts at a new schema version (exact number to be set in Module 1 — e.g. 8, continuing the sequence, with `onCreate` creating the full new model). Future changes then use normal Drift migrations from that baseline. Do not reuse version 7 for a different schema.
+### 7.3 Validation procedure (Module 1, before the switch is considered done)
+
+1. Fresh install / first launch: `expense_tracker_v2` file is created, schema version asserts to the new baseline, all new tables exist.
+2. Old file untouched: the `expense_tracker` file still exists with unchanged size/content (verified in device testing by file inspection; in automated tests, a fixture-based check asserts the factory never opens the old name).
+3. Smoke: create an account with an opening balance + one transaction; verify derived balances, postings balance (SUM debits == SUM credits), and history rows.
+4. Restart: relaunch — data persists, no re-creation, no reset, no duplicate opening transactions.
+5. Sheets: sync resolves the V2 spreadsheet identity (new file, `_meta` version 2); assert no write calls target the V1 spreadsheet identity (fake-backend test + device check of Drive).
+6. Cleanup gating: confirm no code path deletes either database file during startup (code review + a test asserting the factory opens only the v2 name).
+
+### 7.4 Schema versioning after the fresh start [Proposed]
+
+The new baseline starts at a new schema version (exact number set in Module 1 — e.g. 8, continuing the sequence, with `onCreate` creating the full new model). Future changes then use normal Drift migrations from that baseline. Do not reuse version 7 for a different schema.
 
 ---
 
@@ -453,45 +511,67 @@ The new baseline starts at a new schema version (exact number to be set in Modul
 
 ### 8.1 Normative rules
 
-1. **Columns A:J are frozen, forever, in order:** `Date, Type, Category, Description, Amount, UUID, PaymentMethod, Notes, UpdatedAt, Deleted`. No reordering, renaming, or repurposing. Old spreadsheets remain readable by old and new code.
-2. **Extensions go right, versioned.** New fields use columns K onward, appended in a fixed order frozen by a schema version (see §8.2). No new field may be inserted between A and J.
+1. **Columns A:J are frozen within each version, in order:** `Date, Type, Category, Description, Amount, UUID, PaymentMethod, Notes, UpdatedAt, Deleted`. No reordering, renaming, or repurposing within a version. V1's A:J and V2's A:J are identical headers in identical order, so a V2 sheet is readable at the A:J level by any V1-era reader — but V1 and V2 are *different spreadsheets* (§8.2) and must never be merged or written by the other version's code path.
+2. **Extensions go right, versioned, frozen.** New fields use columns K onward in the fixed order frozen in §8.2. No new field may be inserted between A and J, and the K+ order may not change within a schema version.
 3. **UUID is the only row identity.** Upsert-by-UUID, duplicate handling, year-move tombstoning and deleted-before-first-sync behaviour are preserved exactly as implemented.
 4. **Local-first is preserved.** Saves never wait on Sheets; sync is fire-and-forget with bounded retry; failures leave rows pending.
 5. **`syncRevision` is local-only.** It never appears in any sheet column, header, or meta worksheet. The acknowledgement comparison stays ID + revision + deleted + pending.
-6. **Sheet amounts stay decimal.** The `Amount` column remains a normal decimal value (e.g. `1250.75`), produced from integer paise by the sync adapter only (§6.5). Sheets must never receive paise integers in `Amount`.
-7. **Sheets is not the canonical ledger.** Sheets is a backup/readable copy of *transactions*. Balances, postings, documents, settings and split data are never reconstructed from Sheets. If Sheets and local data disagree, local data wins for display; reconciliation is a user-visible import/review flow, never a silent overwrite.
+6. **Sheet amounts are numeric cells.** The `Amount` column holds a numeric spreadsheet value (see §8.5), produced from integer paise at the external boundary only. Sheets must never receive paise integers in `Amount`, and must never receive a decimal *text string* written under RAW input where a numeric cell is intended.
+7. **Sheets is not the canonical ledger.** Sheets is a backup/readable copy of *transactions*. Balances, postings, ledger accounts, documents, settings and split data are never reconstructed from Sheets. If Sheets and local data disagree, local data wins for display; reconciliation is a user-visible import/review flow, never a silent overwrite.
 8. **Sensitive data stays out by default.** No card numbers beyond last 4, no full account numbers, no document files/text, no PDF passwords, no tokens. See §8.7.
+9. **`Type` (column B) uses the full kind vocabulary in V2** — `Expense`, `Income`, `Transfer`, `CardPayment`, `Refund`, `Adjustment`, `OpeningBalance` — exactly the `FinancialTransaction.kind` values. Old V1 semantics (where `Type` could only be `Expense`/`Income`) must never misclassify new kinds: a V2 reader maps `Type` by exact kind match and rejects unknown values as errors (flagged, never coerced into Expense/Income); a V1 spreadsheet contains only `Expense`/`Income` rows by construction and is never written by V2 code.
 
-### 8.2 Versioned extension strategy [Proposed]
+### 8.2 V2 spreadsheet identity and versioned extension strategy [Decided in review round 2]
 
-- A `_meta` worksheet (created on first v2 write) records `sheetSchemaVersion` and the app/version that wrote it. Absence of `_meta` means **v1** (A:J only).
-- **v2 column plan (proposed, to be frozen in Module 1 before the first v2 write — [Unresolved] exact K+ order):**
-  - K `Account` — primary account display name (readability; identity remains UUID-based, names are *not* relationships).
-  - L `FromAccount`, M `ToAccount` — transfer/card-payment legs (names; empty otherwise).
-  - N `TransferGroupId` — shared id for transfer legs / card-payment pairing.
-  - O `OriginalUuid` — refund linkage.
-  - P `Merchant`, Q `Tags` — comma-joined tag names.
-  - R `Kind` — mirrors the transaction kind where `Type` alone is ambiguous (e.g. `Transfer` vs `Expense`). `Type` (column B) keeps its v1 values for v1 rows; new kinds are recorded here and, for new rows, `Type` uses the kind value so a human reading the sheet sees the truth.
-- Readers must tolerate missing K+ columns (v1 sheets) and unknown extra columns (future versions): ignore, never fail.
-- Writers must never *shrink* a sheet: extending headers A:J → A:R on first v2 write for a year worksheet follows the existing header-extension behaviour (extend, don't rewrite data rows).
+**Distinct V2 identity (decided).** The new financial model writes to a **distinct V2 spreadsheet**, separate from the existing V1 spreadsheet:
 
-### 8.3 Transfers and card payments — future sync representation [Proposed]
+- The V1 spreadsheet is preserved **completely untouched as an archive**: V2 code never opens it for writing, never resolves its identity for writes, and never migrates, rewrites or deletes its rows. The only permitted V1 contact is read-only, and only if a future explicit user action (e.g. an archive viewer) is approved — no such action exists in Modules 1–13.
+- The V2 spreadsheet has its **own persisted/resolvable identity**, following the existing backend pattern (Drive find-or-create per sync run, never a hardcoded id): a distinct spreadsheet title (`Expense Tracker v2`), resolved by a Drive query scoped to app-created files with an `appProperties` marker (`expenseTrackerSchemaVersion = 2`) that disambiguates it from any user-created or V1 file. The resolved Drive file id is the V2 identity; it is held in memory for the sync run (as today) and re-resolved on the next run — it is never written into the spreadsheet itself and never stored in the local database as a secret. If resolution finds no V2 spreadsheet, the backend creates one (same find-or-create discipline as V1, including the all-or-nothing discovery rule: a failed listing aborts before any write).
+- V2 starts empty. **V1 rows are not migrated into V2** — there is no automatic migration, no UUID-preserving copy, and no dual-write. This is consistent with the approved disposable-test-data premise and the fresh-database strategy (§7): the V1 spreadsheet remains the readable archive of test history; the user's real history starts in V2. If the user later wants V1 history in the new app, that is a separately approved import (manual, reviewed, new UUIDs) — not part of Modules 1–3.
+- A `_meta` worksheet in the V2 spreadsheet records `sheetSchemaVersion = 2` and the writer version. A spreadsheet without `_meta` is treated as V1 and is never written by V2 code.
 
-- A transfer syncs as **one row** (the transaction), with `Type = Transfer`, `Amount` = the moved amount (decimal), `FromAccount`/`ToAccount` set, `TransferGroupId` set, and no category (or the system transfer marker — Module 1 decides, recorded before first write).
-- A card payment syncs as **one row**, `Type = CardPayment`, `FromAccount` = bank account, `ToAccount` = card account, amount = payment. The original purchase row is untouched; the payment must never be counted as an expense by any reader (documented in the sheet contract and enforced by kind-based reporting locally).
-- Refunds sync as one row with `Type = Refund`, `OriginalUuid` set, category = original category.
-- **Unresolved:** whether v2 rows for transfers/payments should also write a second, purely informational row for v1 readers — default answer is **no** (one row per transaction, always), to be confirmed by the tech lead.
+**Frozen K+ field order (normative — this order is frozen by this specification; future fields append after X with a schema-version bump):**
+
+| Col | Header | Content | Notes |
+|---|---|---|---|
+| K | `Kind` | Transaction kind verbatim (`Expense`, `Income`, `Transfer`, `CardPayment`, `Refund`, `Adjustment`, `OpeningBalance`) | Mirrors `Type` (B) explicitly so kind is unambiguous even where B is read loosely |
+| L | `CategoryId` | Stable category id (`food`, custom id) | Empty for transfers/card payments/opening balances |
+| M | `AccountId` | Account UUID (primary account for expense/income; destination account for transfers/card payments is in R — see O–R) | Stable identity; never a name alone |
+| N | `Account` | Account display name | Human-readable; names are not relationships |
+| O | `FromAccountId` | Source account UUID | Transfers + card payments only |
+| P | `FromAccount` | Source account display name | Human-readable |
+| Q | `ToAccountId` | Destination account UUID | Transfers + card payments only |
+| R | `ToAccount` | Destination account display name | Human-readable |
+| S | `CardId` | CreditCard UUID | Card purchases/payments only; empty otherwise; never a card number |
+| T | `Merchant` | Merchant name | Human-readable |
+| U | `Tags` | Comma-joined tag names | Human-readable |
+| V | `OriginalUuid` | UUID of the original transaction (refunds/reversals) | Empty otherwise |
+| W | `RelatedUuid` | UUID of the related transaction (adjustments correcting another event) | Empty otherwise |
+| X | `Source` | `manual` / `recurring` / `import` / `template` | Human-readable |
+
+There is **no** `TransferGroupId` column: a transfer is one row (see §8.3). Readers must tolerate missing K+ columns (V1 sheets have none) and unknown columns after X (future versions): ignore, never fail. Writers must never *shrink* a sheet: extending headers A:J → A:X on first V2 write for a year worksheet follows the existing header-extension behaviour (extend, don't rewrite data rows).
+
+### 8.3 Transfers and card payments — sync representation [Decided]
+
+- A transfer syncs as **one row** (the transaction), with `Type = Transfer`, `Kind = Transfer`, `Amount` = the moved amount (numeric cell), `FromAccountId`/`FromAccount` and `ToAccountId`/`ToAccount` set, `CategoryId` empty, and no category name in column C (or the literal `—`? No: column C stays empty for kind rows without a category — empty is the frozen convention; a reader must treat empty C + kind Transfer as "no category", never as "Other").
+- A card payment syncs as **one row**, `Type = CardPayment`, `Kind = CardPayment`, `FromAccountId` = bank account, `ToAccountId` = card account, `CardId` = the card, amount = payment. The original purchase row is untouched; the payment must never be counted as an expense by any reader (kind-based reporting, §6.3).
+- Refunds sync as one row with `Type = Refund`, `Kind = Refund`, `OriginalUuid` set, category = original category, `CategoryId` = original category id.
+- Adjustments sync as one row with `Type = Adjustment`, `Kind = Adjustment`, `RelatedUuid` set when correcting another event.
+- Opening balances sync as one row with `Type = OpeningBalance`, `Kind = OpeningBalance`, `AccountId` set. (Opening balances are ordinary synced transactions; their postings stay local.)
+- **No second informational row** for any of these kinds: one transaction = one row, always. A V1-era reader opening a V2 sheet sees kind strings it does not know in column B; it must not coerce them (rule 9 above) — and in practice it never will, because V1 and V2 are different spreadsheets.
 
 ### 8.4 Accounts and cards — sync scope [Proposed]
 
-- Account/card *data* does not get its own worksheets in V1 of the extension. Account names travel inside transaction rows (columns K–M) for readability only.
+- Account/card *data* does not get its own worksheets in V2. Account and card identities travel inside transaction rows (columns M–S) for readability and reconciliation only.
 - A separate `Accounts` worksheet is **deferred** until a concrete need (multi-device account lists) is approved; inventing it now would make Sheets a second source of truth for configuration. **[Unresolved]** — revisit after Module 1.
 - Balances are never written to Sheets. A reader computing "balance" from the sheet would be wrong (transfers, card payments, opening postings) — the contract states this explicitly so no future feature relies on it.
 
-### 8.5 Old spreadsheets remain readable
+### 8.5 Old V1 rows — migration and compatibility
 
-- V1 sheets (no `_meta`, A:J only) read exactly as today. New code reading a v1 row maps: `Category` name → category id by exact name match against built-ins/customs (fallback: keep the name as a legacy text field on the transaction for display; never invent an id). `PaymentMethod` text maps to `paymentChannel` by the existing fixed list (UPI/Cash/Card/Bank Transfer); unknown values are preserved as text.
-- The existing Drive resolution (app-created folder, find-or-create) is unchanged. The Module 1 reset decision (§7) determines whether new-model data goes to a new spreadsheet or the same one under v2 — either way, old data is never rewritten in place by the new writer except through the normal upsert of rows the new app itself owns (same UUID).
+- **No migration.** V1 rows stay in the V1 spreadsheet, untouched. The new app does not read V1 rows into the new model automatically. The V1 spreadsheet remains readable by the old app version and by any spreadsheet viewer exactly as today.
+- **Compatibility for readers:** new code reading a V1-format row (only possible if a user explicitly opens a V1 sheet through a future archive feature — not in Modules 1–13) maps: `Category` name → category id by exact name match against built-ins/customs (fallback: keep the name as a legacy text field for display; never invent an id); `PaymentMethod` text → `paymentChannel` by the existing fixed list; unknown `Type` values are rejected/flagged, never coerced. `Amount` is parsed from the numeric cell value via decimal-string parsing (importer normalisation rule, §6.2).
+- **Money conversion at the Sheets boundary (normative):** internal amounts are integer paise at all times except inside the sync adapter. The adapter converts paise to a **numeric spreadsheet cell value** at the external boundary only: it derives the decimal representation from the integer (string arithmetic — e.g. `125075` → `1250.75`) and writes it as a JSON *number* through the Sheets API with an input option that stores a NUMBER cell (not a text string under RAW). It must **not** write a decimal text string under RAW input, and must **not** compute the value with floating-point division (`paise / 100` as a `double`) anywhere in application code. Reading back: the adapter parses the cell's numeric value to paise via decimal-string parsing (never `double` arithmetic), applying the importer-normalisation rule for any excess fractional digits. **Round-trip tests (required, Module 1):** `0`, `1`, `99`, `100`, `125075`, and a large value (`9007199254740991` paise — the largest exactly-representable JSON integer boundary case; values beyond it are rejected by validation with a documented limit) must survive paise → sheet numeric → paise unchanged, with the written cell asserted to be of NUMBER type in the fake-backend capture. These tests live with the sync adapter tests, not in widget tests.
+- The existing Drive resolution (app-created folder, find-or-create) pattern is unchanged in shape; only the identity (title + marker) differs for V2. The Module 1 fresh-database decision (§7) and this V2 identity decision are paired: new local database + new spreadsheet, old database + old spreadsheet both preserved as archives.
 
 ### 8.6 What does not change
 
@@ -513,7 +593,7 @@ Input (camera / gallery / PDF / CSV / share)
   → Intake: copy into app-private staging, assign ImportBatch + ImportDocument, record provenance
   → Classification: document kind + issuer guess + confidence
   → Extraction: OCR and/or text extraction → structured fields (§9.2) + per-field confidence
-  → Normalisation: dates, amounts (→ paise, §6.2), descriptions, references
+  → Normalisation: dates, amounts (→ paise, §6.2, under the importer-normalisation rule below), descriptions, references. Statement totals are parsed into `BankStatementSummary` / `CardStatement`; line items are parsed into `ExtractionCandidate`s — the two are never mixed (§9.6).
   → Duplicate detection: reference-based first, fallback matching second (§9.5)
   → Statement reconciliation (statement kinds only, §9.6)
   → Review: human sees candidates with confidence + duplicate flags, corrects fields
@@ -534,6 +614,8 @@ Rules: stages are explicit states on `ImportDocument`/`ExtractionCandidate` (§5
 **Other financial documents.** Classified as `other`; extraction is best-effort (amount/date/merchant if present); review is mandatory; no statement reconciliation applies.
 
 **CSV upload.** Header-mapped columns (user confirms mapping on first use per format); rows become candidates through the same normalisation/dedupe/review stages. CSV is *structured* input, not OCR — extraction confidence is high for present fields, low for inferred ones.
+
+**Importer normalisation rule (the only place rounding is permitted — §6.2):** amounts arriving from documents, CSVs or Sheets cells with more than 2 fractional digits are normalised by round-half-away-from-zero to whole paise at the import parse boundary. The original raw string/number is retained on the candidate (`rawAmountText`) for audit, and the normalised value is shown in review. This rule applies *only* to imported data — manual input rejects over-precise values instead (§6.2). Never normalise with `double` arithmetic.
 
 ### 9.3 Confidence, correction, and review
 
@@ -568,7 +650,9 @@ User-selected resolution: for each flagged candidate the user chooses *Skip as d
 
 ### 9.6 Statement reconciliation
 
-For bank/card statements: `opening balance + Σ(credits) − Σ(debits)` must equal `closing balance` within a small tolerance (1 paisa, to absorb statement rounding) over *confirmed* lines. Mismatches surface as: missing lines (extracted line count vs statement totals), unparsed lines (flagged for manual entry), and balance drift (shown as an explicit reconciliation warning — the batch can still complete, but the warning is recorded and visible). Reconciliation never blocks confirming individual correct lines, and never auto-creates balancing entries.
+Reconciliation is stored, not implied: for bank statements on `BankStatementSummary`, for card statements on `CardStatement` (relationship chain `ImportDocument` → `CardStatement` → `CreditCard`; the document may summarise at most one statement, and the summary references the document). Statement totals and line candidates are stored separately (§5.2) so totals can never be double-counted as transactions: the reconciliation check compares *totals* against *candidate sums*, it never creates transactions from totals.
+
+For bank/card statements: `opening balance + Σ(credits) − Σ(debits)` must equal `closing balance` within a small tolerance (1 paisa, to absorb statement rounding) over *confirmed* lines, and for card statements the category totals (payments/purchases/refunds/fees/taxes) must sum consistently with the statement's total-due movement. The result is recorded as `reconciliationStatus` (`reconciled` | `discrepancy` | `unreconciled`) with a `reconciliationNote` on the summary entity. Mismatches surface as: missing lines (extracted line count vs statement totals), unparsed lines (flagged for manual entry), and balance drift (shown as an explicit reconciliation warning — the batch can still complete, but the warning is recorded and visible). Reconciliation never blocks confirming individual correct lines, and never auto-creates balancing entries.
 
 ### 9.7 Privacy, retention, and recovery
 
@@ -658,15 +742,17 @@ Applies to: UI, Sheets extension columns (last 4 only), notifications, logs, cra
 
 ### 11.7 Backup encryption decision [Unresolved]
 
-Whether local backup/restore files (Module 3) and/or the Drift database are encrypted, with what key management (user password vs device keystore), is **unresolved** and must be decided before Module 3 ships export — exporting unencrypted financial data without a decision would bake in a privacy regression. Options to decide between (Module 3 briefing): (a) unencrypted export with explicit user warning (matches AboutMoney-style free export simplicity, weakest privacy); (b) password-protected encrypted export (stronger, needs password UX + recovery story); (c) encrypted database via SQLCipher + encrypted export (strongest, most complexity). No option is selected here.
+Whether local backup/restore files (Module 3) and/or the Drift database are encrypted, with what key management (user password vs device keystore), is **unresolved** and must be decided before Module 3 ships export — exporting unencrypted financial data without a decision would bake in a privacy regression. **This is a hard gate: no Module 3 export/restore code ships until the decision is recorded in an ADR.** Options to decide between (Module 3 briefing): (a) unencrypted export with explicit user warning (matches AboutMoney-style free export simplicity, weakest privacy); (b) password-protected encrypted export (stronger, needs password UX + recovery story); (c) encrypted database via SQLCipher + encrypted export (strongest, most complexity). No option is selected here.
 
 ### 11.8 Google Sheets data scope
 
-Existing scopes (`drive.file` + `spreadsheets`) are retained; no new scopes are proposed. Sheets receives only confirmed transaction fields (§8.7). The spreadsheet lives in the app-created Drive folder; the user can delete it from Drive at any time — the app must handle a missing spreadsheet by re-resolving (existing behaviour), never by failing destructively.
+Existing scopes (`drive.file` + `spreadsheets`) are retained; no new scopes are proposed. Sheets receives only confirmed transaction fields (§8.7). The V2 spreadsheet lives under its own resolvable Drive identity (§8.2); the user can delete it from Drive at any time — the app must handle a missing spreadsheet by re-resolving (existing behaviour), never by failing destructively. The V1 spreadsheet is never written by V2 code (§8.2).
 
-### 11.9 Local document retention
+### 11.9 Local document retention and Module 7 readiness gate
 
 See §9.7. Retention is user-configurable; the default is unresolved (Module 7). Retention expiry deletes files *and* rows; the deletion is recorded in batch history metadata (counts only, no content).
+
+**Module 7 readiness gate (minimum protections before import ships, even though app lock itself stays in Module 12):** before any Module 7 build ships, all of the following must be in place and tested: documents stored in app-private storage only; no document content, card/account identifiers or amounts in logs; temp/staging cleanup on completion, discard, failure and startup (§9.7); masked display (last-4 only) everywhere including review UI and notifications; no cloud upload path exists in the import code; PDF passwords held in memory only; the `ImportDocument` mutual-exclusion validation (§5.2) enforced. The Module 7 PR must list this gate explicitly in its description.
 
 ---
 
@@ -705,12 +791,14 @@ Landing page sections: Recurring transactions (rules list + next runs, Module 5)
 
 - **Empty states:** every list has an illustrated/text empty state with a single primary action (e.g. "Add your first account"). No dead-end screens.
 - **Loading:** local streams → brief skeletons; import/sync operations → inline progress with cancel where safe (cancelling never discards confirmed data).
-- **Errors:** inline, actionable messages (retry, open settings, view details). Destructive actions (delete/archive/reset) require confirmation dialogs; irreversible actions require explicit confirmation text where the data loss is significant (database reset, batch discard with documents).
+- **Errors:** inline, actionable messages (retry, open settings, view details). Destructive actions (delete/archive, database cleanup) require confirmation dialogs; irreversible actions require explicit confirmation text where the data loss is significant (database cleanup, batch discard with documents).
 - **Responsive:** phone-first single column. Tablet/large screens: two-column content where lists + detail coexist (proposed; exact breakpoints in Module 1/2 implementation). Text scaling and accessibility labels are required on all new screens; colour is never the only signal for over-budget/overdue states.
 
 ---
 
 ## 13. Module dependency graph
+
+**Read this graph as hard technical dependencies only (solid arrows).** Delivery order is the module numbering M0 → M13, which is *not* the same thing as dependency: a module may be delivered later than another without depending on it, and an optional integration (dashed arrow) is never a reason to delay or block a module. Split-and-settle (M13) is last by delivery order and by dependency.
 
 ```mermaid
 flowchart TD
@@ -719,7 +807,7 @@ flowchart TD
     M2["M2 · Quick logging, merchants & tags"]
     M3["M3 · Export, backup & restore"]
     M4["M4 · Budgets & spending pace"]
-    M5["M5 · Recurring & reminders"]
+    M5["M5 · Recurring & reminders (generic scheduler)"]
     M6["M6 · Credit cards & EMI"]
     M7["M7 · Document import & Scan Center"]
     M8["M8 · Advanced analytics"]
@@ -731,52 +819,45 @@ flowchart TD
     M0 --> M1
     M1 --> M2
     M1 --> M3
-    M2 --> M4
     M1 --> M4
-    M4 --> M5
     M1 --> M5
     M1 --> M6
-    M6 --> M5
-    M2 --> M7
     M1 --> M7
-    M6 --> M7
     M1 --> M8
-    M4 --> M8
     M1 --> M9
-    M6 --> M9
     M1 --> M10
-    M8 --> M11
-    M4 --> M11
-    M5 --> M11
     M1 --> M13
     M2 --> M13
-    M5 --> M13
-    M12 -.-> M1
-    M12 -.-> M2
-    M12 -.-> M3
-    M12 -.-> M5
-    M12 -.-> M6
-    M12 -.-> M7
-    M12 -.-> M13
+    M6 --> M7
+    M6 --> M9
+    M8 --> M11
+    M5 -.-> M6
+    M2 -.-> M4
+    M2 -.-> M8
+    M4 -.-> M11
+    M5 -.-> M11
+    M5 -.-> M4
 ```
 
-Dashed arrows from M12 mean: security/privacy/onboarding requirements from §11 apply *throughout* (each module implements its slice), while the dedicated polish/security module (M12) completes app lock, onboarding and calculators. M12 is not a hard dependency that blocks earlier modules; the *requirements* are.
+- **Solid = hard dependency** (the module cannot be built correctly without the target's entities/services): every implementation module hard-depends on M1's ledger; M7 additionally hard-depends on M6's card/statement entities (card-statement import needs a `CreditCard` to link to); M9 hard-depends on M6's liabilities; M11 hard-depends on M8's aggregates; M13 hard-depends on M1 (settlements post through the ledger) and M2 (transaction creation/editing flows it reuses for split expenses).
+- **Dashed = optional integration** (usable without it; adopt when ready, never a blocker): M5's generic reminder scheduler is *reused* by M6 for card reminders, by M4 for budget alerts, and by M11 for insight nudges — but M6, M4 and M11 are all buildable and shippable with in-app reminders first, and M5's delivery is not on their critical path. M2's merchants/tags are *consumed* by M4 (budget defaults) and M8 (merchant analytics) as data, not as dependencies — M4 budgets and M8 analytics work on categories/transactions alone.
+- **Explicit non-dependencies (decided):** M13 does **not** hard-depend on M5 — recurring rules are not needed for split/settle, and recurring splits are explicitly out of scope. Budgets (M4) do **not** require recurring transactions (M5). Analytics (M8) does **not** require M2's merchants/tags as a hard dependency. M12 has no hard-dependency arrows: its *requirements* (security, onboarding, polish) apply throughout (§14), while the module itself completes the remaining pieces last.
 
-| Module | Hard depends on | Soft / reuses |
-|---|---|---|
-| 1 Accounts & ledger | M0 | Sheets engine (unchanged), categories (stable ids) |
-| 2 Quick logging | M1 | Categories, merchants/tags tables from M1 schema |
-| 3 Export/backup/restore | M1 | Money formatting, Sheets contract (§8) |
-| 4 Budgets & pace | M1, M2 | Category ids, transaction streams |
-| 5 Recurring & reminders | M1, M4 (alerts) | Notification scheduler (new), occurrence model |
-| 6 Cards & EMI | M1 | Ledger card postings (§6.3 E/F), statements |
-| 7 Import & Scan | M1, M2, M6 (statements) | Pipeline (§9), share intents (§10), ledger posting via M1 services |
-| 8 Analytics | M1, M4 | Chart evaluation, posting-derived aggregates |
-| 9 Net worth | M1, M6 | Manual asset/liability entities |
-| 10 Goals | M1 | Contribution transfers via ledger |
-| 11 Insights | M8, M4, M5 | Merchant/category history, smart-rule suggestions |
-| 12 Calculators/onboarding/security/polish | All (applies throughout) | App lock, setup wizard, calculators (standalone) |
-| 13 Split & settle | M1, M2, M5 (people/balances) | Ledger for settlements, QR for UPI settle (evaluated in M13) |
+| Module | Hard dependencies | Delivery order note | Optional integrations |
+|---|---|---|---|
+| 1 Accounts & ledger | M0 | First implementation module | Sheets engine (unchanged) |
+| 2 Quick logging | M1 | — | — |
+| 3 Export/backup/restore | M1 | Encryption decision is a gate (§11.7), not a dependency | Sheets V2 contract (§8) |
+| 4 Budgets & pace | M1 | Does not require M5 | M2 merchants/tags (defaults); M5 scheduler (alerts) |
+| 5 Recurring & reminders | M1 | Provides the generic scheduler others reuse | — |
+| 6 Cards & EMI | M1 | Card UI/billing live here; M1 provides only the generic liability-ledger foundation | M5 scheduler (card reminders) |
+| 7 Import & Scan | M1, M6 | Needs card entities for statement import | M2 logging flows (confirmation UX) |
+| 8 Analytics | M1 | — | M2 merchants/tags (breakdowns) |
+| 9 Net worth | M1, M6 | — | — |
+| 10 Goals | M1 | Allocations vs transfers distinguished (§5.2) | — |
+| 11 Insights | M8 | — | M4 budgets, M5 scheduler (nudges) |
+| 12 Calculators/onboarding/security/polish | — (requirements apply throughout) | Last-but-one by delivery; app lock here, minimum protections gated at M7 (§11.9) | — |
+| 13 Split & settle | M1, M2 | Last, always | — (no M5 dependency; recurring splits out of scope) |
 
 ---
 
@@ -787,21 +868,21 @@ One module at a time, branch + PR per module, tech-lead review before merge, use
 | # | Module | Objective (exit criteria in brief) | Must NOT include |
 |---|---|---|---|
 | 0 | Master architecture & foundation | This blueprint + ADRs reviewed and approved. No code. | Any feature code, deps, schema change |
-| 1 | Accounts & financial ledger | Integer-paise Money model; Account + Transaction + Posting + History; posting rules A–G; derived balances; opening balances; transfers; card purchase/payment postings; DB reset executed (approved, §7); Sheets v2 extension frozen + old sheets readable; dead-code cleanup ( §2.5). | Budgets, recurring, cards UI beyond ledger postings, import |
+| 1 | Accounts & financial ledger | `LedgerAccount` model (§6.3) + Account/Transaction/Posting/History; posting rules A–G incl. transfer/refund/adjustment; derived balances; opening-balance events (§6.4); fresh database `expense_tracker_v2` with `onCreate` (§7) + validation procedure; Sheets V2 identity + frozen K+ order (§8.2); dead-code cleanup (§2.5). Generic liability-ledger foundation only — no card UI/billing (Module 6). | Budgets, recurring, cards UI, import |
 | 2 | Quick logging, merchants, tags | Sub-5-second add flow; favourites/templates; merchant + tag management; smart defaults; search/filter upgrades. | OCR/import, budgets |
-| 3 | Export, backup & restore | CSV export; JSON backup/restore; backup-encryption decision implemented (§11.7). | Cloud backup beyond Sheets |
-| 4 | Budgets & spending pace | Overall + per-category budgets; pacing ("safe per day"); 80/100% alerts (in-app; OS alerts with M5 scheduler if ready). | Recurring rules |
-| 5 | Recurring & reminders | Rules, occurrences, auto-post option (default off), OS reminder scheduling, bill list. | Smart rules (M11) |
-| 6 | Credit cards & EMI | Card profiles, statements, due tracking, EMI schedules, card postings wired to M1 ledger. | Statement import (that's M7) |
-| 7 | Document Import & Scan Center | Full §9 pipeline + §10 share intents; statement reconciliation; dedupe; retention; recovery. | Cloud OCR (out of scope V1) |
-| 8 | Advanced analytics | Charts, trends, comparisons, top merchants, by-account/payment views. | Insights/recommendations (M11) |
-| 9 | Net worth | Derived net worth from accounts + manual assets/liabilities; history chart. | Investment tracking/prices |
-| 10 | Savings goals | Goals + contributions via ledger transfers; progress UI. | Auto-saving rules (M11 territory if ever) |
+| 3 | Export, backup & restore | CSV export; JSON backup/restore; **backup-encryption decision implemented — hard gate (§11.7): no export ships undecided.** | Cloud backup beyond Sheets |
+| 4 | Budgets & spending pace | Overall + per-category budgets; pacing ("safe per day"); 80/100% alerts (in-app; OS alerts via M5 scheduler as an optional integration when ready). Does not require M5. | Recurring rules |
+| 5 | Recurring & reminders | Rules, occurrences, auto-post option (default off), **generic OS reminder scheduler** (reused optionally by M4/M6/M11), bill list. | Smart rules (M11) |
+| 6 | Credit cards & EMI | Card profiles, statements, due tracking, EMI schedules (spanning cycles, §5.2), card postings wired to M1 ledger. May reuse M5 scheduler for card reminders (optional). | Statement import (that's M7) |
+| 7 | Document Import & Scan Center | Full §9 pipeline + §10 share intents; statement reconciliation via summary entities; dedupe; retention; recovery; **Module 7 readiness gate (§11.9) must be listed and met in the PR.** | Cloud OCR (out of scope V1) |
+| 8 | Advanced analytics | Charts, trends, comparisons, top merchants, by-account/payment views. Merchants/tags are optional data sources, not hard dependencies. | Insights/recommendations (M11) |
+| 9 | Net worth | Derived net worth from accounts + manual assets/liabilities (no account linkage for manual holdings); history chart. | Investment tracking/prices |
+| 10 | Savings goals | Goals + contributions, distinguishing **virtual allocations** (goal progress only) from **transfer contributions** (real money movement via backing transfer transaction, §5.2); progress UI. | Auto-saving rules (M11 territory if ever) |
 | 11 | Smart spending insights | Merchant/category insights, anomaly flags, smart rules (confirm-by-default). | Auto-posting without confirmation |
-| 12 | Calculators, onboarding, security & polish | Tax/FD-RD calculators; setup wizard; app lock/PIN/biometrics; README + polish; accessibility pass. | New financial features |
-| 13 | Split & settle | People/groups, split methods, balances, debt simplification, settlements, UPI QR. | Multi-user sync (local-only V1) |
+| 12 | Calculators, onboarding, security & polish | Tax/FD-RD calculators; setup wizard; app lock/PIN/biometrics; old-database cleanup action (explicit, confirmed, §7.1); README + polish; accessibility pass. | New financial features |
+| 13 | Split & settle | People/groups, split methods, balances, debt simplification, settlements, UPI QR. Hard depends on M1 + M2 only; no M5 dependency; recurring splits out of scope. | Multi-user sync (local-only V1) |
 
-**Security slices per module (not postponed):** M1 masking helpers + no-sensitive-logging rule; M3 backup-encryption decision; M5 notification content masking; M6 card-data rules; M7 document privacy/retention; M12 lock + polish. Each module brief must list its security slice explicitly.
+**Security slices per module (not postponed):** M1 masking helpers + no-sensitive-logging rule + `LedgerAccount` visibility rule (`isSystem` never in pickers); M3 backup-encryption decision (hard gate); M5 notification content masking; M6 card-data rules (last-4 only, no CVV/PIN); M7 readiness gate (§11.9: private storage, log hygiene, temp cleanup, masked display, no cloud path, memory-only PDF passwords, mutual-exclusion validation); M12 lock + polish + old-database cleanup action. Each module brief must list its security slice explicitly.
 
 ---
 
@@ -811,18 +892,18 @@ One module at a time, branch + PR per module, tech-lead review before merge, use
 
 - **Unit:** Money (precision, parsing, rounding, formatting), posting-rule service (each case A–G + refund + transfer), recurrence expansion, dedupe scoring, Sheets row mapping (paise ↔ decimal), masking helpers.
 - **Repository / database:** CRUD + soft-delete/restore + rename/archive invariants, atomicity (multi-table writes fail as a unit — tested by forcing a failure mid-transaction where the executor supports it), derived-balance reconciliation (derived sum == expected for scripted histories), category-id stability (rename never rewrites transactions after M1).
-- **Migration:** v6→v7 test retained until the M1 reset; new-baseline + each future migration gets a fixture test (old DB → new DB, data preserved, new fields defaulted). No hand-edited generated code, ever.
+- **Migration:** v6→v7 test retained until the M1 fresh-database switch; new-baseline + each future migration gets a fixture test (old DB → new DB, data preserved, new fields defaulted). No hand-edited generated code, ever.
 - **Integration:** sync engine with fake backend/store (existing harness, extended for v2 columns + transfer/card rows); import pipeline end-to-end on fixture documents (text-layer PDF, scanned-image fixture, CSV fixture, shared-text fixture); share-intent flows on device (cold/warm/multiple/text).
 - **Widget:** one test per new screen flow (add, transfer, budget create, rule create, import review confirm, lock gate) using the existing close-database-in-body pattern; no new widget test may mount a live DB without closing it in the body.
 - **Device (user, I2304 or equivalent):** per-module checklist in each PR description — install/launch, happy path, edit/delete/restore, offline save, Sheets sync + retry (airplane-mode), import from gallery/share, reminder delivery (M5+), lock/unlock (M12). No APK build is claimed from the sandbox (no Android SDK/JDK there); device results are reported by the user/tester with branch + commit.
 
 ### 15.2 Required coverage (minimum, per brief)
 
-Money precision/rounding; account balances; transfers; card purchase/payment; refunds; edit/delete/restore consistency; duplicate import detection; statement reconciliation; Sheets compatibility (v1 read + v2 write + old-reader tolerance); backup/restore; transaction atomicity; historical integrity (archive/rename never corrupts history).
+Money precision/rounding (including the reject-vs-normalise distinction, §6.2); ledger invariants (SUM debits == SUM credits per transaction; positive-only posting amounts; every posting references a valid, non-archived `LedgerAccount`; system accounts never appear in account queries); account balances (derived, normal-balance rules); transfers (one transaction, two postings, same-currency, no self-transfer); card purchase/payment; refunds (partial, multiple, maximum refundable amount, over-refund rejection, destination account); adjustments and reversals; opening balances (event + edit/correct/reverse paths, insertion order); edit/delete/restore consistency; category-id stability; `ImportDocument` mutual exclusion (account vs card); duplicate import detection; statement reconciliation (summary entities vs candidate sums, no double-counting of totals); Sheets compatibility (V1 archive untouched; V2 identity resolution; frozen K+ order; `Type`/kind mapping; numeric-cell round-trips for 0, 1, 99, 100, 125075 and 9007199254740991 paise with NUMBER-type assertion — §8.5); backup/restore; database transaction atomicity; fresh-database validation (§7.3: v2 creation, old file untouched, restart persistence, no startup deletion); historical integrity (archive/rename never corrupts history).
 
 ### 15.3 Quality gates per PR
 
-`dart format` on changed files (changed-files only — never a full-tree format pass; see the round-3 lesson where a full-tree pass reformatted 15 untouched files); `flutter analyze` (0 errors/warnings; pre-existing infos reported separately); full `flutter test` with the baseline failure reported separately until fixed; build_runner regeneration verified (generated diff reviewed, never hand-edited); PR description states schema/migration behaviour + device checklist. **Baseline failures are never hidden:** the `widget_test.dart` Timer failure stays reported until a root-cause fix lands, and no test is weakened/skipped/deleted to green the suite.
+`dart format` on changed files (changed-files only — never a full-tree format pass; see the round-3 lesson where a full-tree pass reformatted 15 untouched files); `flutter analyze` (0 errors/warnings; pre-existing infos reported separately); full `flutter test` with the baseline failure reported separately until fixed; build_runner regeneration verified (generated diff reviewed, never hand-edited); PR description states schema/migration behaviour + device checklist + (where applicable) its security slice / readiness gate. **Baseline failures are never hidden:** the `widget_test.dart` Timer failure stays reported until a root-cause fix lands, and no test is weakened/skipped/deleted to green the suite.
 
 ---
 
@@ -830,39 +911,45 @@ Money precision/rounding; account balances; transfers; card purchase/payment; re
 
 ### 16.1 Decisions (summary — full ADR text in `architecture-decisions.md`)
 
+Review round 2 (2026-11-01) resolved the modelling contradictions flagged by the technical lead. Decisions marked **Accepted** below are now part of the approved blueprint direction; **Proposed** items await tech-lead approval of this revision; **Unresolved** items are genuine open questions (§16.2). History is preserved in the ADRs file via dated amendment notes — nothing was silently overwritten.
+
 | ID | Decision | Status |
 |---|---|---|
-| ADR-001 | Integer minor-unit money (paise), Money value object, no persisted `double` | Accepted (product decision) |
+| ADR-001 | Integer minor-unit money (paise), Money value object, no persisted `double`; manual input rejects over-precise values, importer normalisation is the only rounding path (amended R2) | Accepted (product decision) |
 | ADR-002 | INR-only in V1; currency code carried everywhere; no exchange rates | Accepted (product decision) |
-| ADR-003 | Double-entry-lite ledger: Transaction + balanced Postings; derived balances; opening balance as posting | Proposed |
-| ADR-004 | Stable category ids; archival over deletion; rename needs no propagation after M1 | Proposed |
-| ADR-005 | Clean new data model; explicit user-approved database reset in M1; old spreadsheet untouched | Proposed (user confirmed data is disposable; execution needs per-module approval) |
-| ADR-006 | Sheets A:J frozen; versioned K+ extension; syncRevision local-only; Sheets never canonical | Proposed |
-| ADR-007 | On-device import processing; no auto-posting; documents never uploaded; retention-gated storage | Proposed |
+| ADR-003 | `LedgerAccount` ledger: Transaction + balanced Postings against ledger accounts; normal-balance rules separate from the balancing invariant; system accounts never shown as user accounts (amended R2 — counterpart question decided) | Accepted |
+| ADR-004 | Stable category ids; archival over deletion; rename needs no propagation after M1 | Accepted |
+| ADR-005 | Fresh database identity `expense_tracker_v2` via `onCreate`; old v7 database untouched as archive; no deletion of a live/open database; no automatic destructive reset on startup (amended R2 — replaces reset proposal) | Accepted |
+| ADR-006 | Distinct V2 spreadsheet identity (V1 untouched archive); A:J frozen within each version; K+ order frozen (§8.2) incl. stable identity fields; `Type`/kind vocabulary; numeric-cell money conversion; syncRevision local-only; Sheets never canonical (amended R2) | Accepted |
+| ADR-007 | On-device import processing; no auto-posting; documents never uploaded; retention-gated storage; statement summaries separate from candidates; `ImportDocument` mutual exclusion; M7 readiness gate (amended R2) | Accepted (data model/privacy); Proposed (extraction package selection) |
 | ADR-008 | Android share intents as first-class intake; source-app limitation stated; plugin vs channel to be evaluated in M7 | Proposed |
 | ADR-009 | No new state-management framework; keep streams + repositories | Proposed |
-| ADR-010 | Notifications: in-app store now; OS scheduler added in M5 behind an interface | Proposed |
-| ADR-011 | App lock is a gate, not encryption; DB/backup encryption undecided (before M3) | Proposed / Unresolved (encryption part) |
-| ADR-012 | Split-and-settle last; local-only in V1; no multi-user sync design in this blueprint | Accepted (roadmap) |
+| ADR-010 | Notifications: in-app store now; generic OS scheduler added in M5 behind an interface, reused optionally by M4/M6/M11 | Proposed |
+| ADR-011 | App lock is a gate, not encryption; DB/backup encryption undecided — hard gate before Module 3 export ships; M7 readiness gate before Module 7 ships (amended R2) | Proposed / Unresolved (encryption option) |
+| ADR-012 | Split-and-settle last; local-only in V1; no multi-user sync design; no hard dependency on M5 | Accepted (roadmap) |
+| ADR-013 | Transfer (one transaction, two postings, explicit source/destination, no group id), refund (partial/multiple, maximum refundable amount, destination account, original linkage) and adjustment/reversal semantics (new R2) | Accepted |
+| ADR-014 | Fresh-database strategy detail: injectable provider replaces the global singleton for the v2 database; validation procedure §7.3 (new R2; see ADR-005) | Accepted |
+| ADR-015 | Sheets V2 identity detail: distinct title + `appProperties` marker, per-run resolution, V1 never written by V2 code, no migration of V1 rows (new R2; see ADR-006) | Accepted |
+| ADR-016 | Input precision: reject >2 decimals for manual INR input; importer normalisation (round-half-away-from-zero, raw retained) as the sole exception (new R2; see ADR-001) | Accepted |
+| ADR-017 | Savings-goal allocation (virtual) vs transfer contribution (real money movement) distinguished (new R2) | Accepted |
 
-### 16.2 Unresolved questions — require user / technical-lead approval before implementation
+### 16.2 Unresolved questions — genuine open items requiring user / technical-lead approval
 
-1. **Sheets disposition on reset:** new spreadsheet vs same spreadsheet under v2 extension (§7.1 step 4, §8.2). Must be decided before Module 1 writes anything.
-2. **Posting counterpart representation:** real system clearing/equity account vs kind-derived reporting (§6.3). Module 1 plan must pick one and record it.
-3. **Backup/DB encryption:** option (a)/(b)/(c) in §11.7 — decide before Module 3.
-4. **Document retention default:** keep-until-deleted vs 30 days vs until-confirmed (§9.7).
-5. **K+ column order:** freeze the exact v2 extension order before the first v2 write (§8.2).
-6. **Transfer second-row question:** one row per transaction (recommended) vs informational second row for v1 readers (§8.3).
-7. **Accounts worksheet:** separate worksheet now, later, or never (§8.4).
-8. **Built-in category renaming:** fixed names (recommended) vs user-renamable built-ins (§5.2).
-9. **OCR/extraction package:** on-device approach selection in Module 7 (§9.4); cloud extraction stays out of scope unless explicitly approved with consent design.
-10. **Share-intake implementation:** established plugin vs custom channel (§10.3).
-11. **Chart package:** selection in Module 8 (no chart package exists today).
-12. **Notification scheduler package:** selection in Module 5.
-13. **App-lock mechanism:** biometric/PIN details + PIN storage mechanism (Module 12).
-14. **History purge:** whether `TransactionHistory` can ever be purged by the user (§5.2).
-15. **Deep links:** deferred; decide if/when a scheme is needed (no proposal in V1).
-16. **Split sync:** whether split data ever syncs (local-only in V1 design; revisit in Module 13).
+The following are the *only* remaining unresolved decisions. Everything else in review round 2 was decided and is recorded above.
+
+1. **Backup/DB encryption option:** (a) unencrypted export + warning, (b) password-protected encrypted export, or (c) SQLCipher + encrypted export (§11.7). Must be decided before Module 3 ships (hard gate); the *option* is unresolved, the *timing* is decided.
+2. **Document retention default:** keep-until-deleted vs 30 days vs until-confirmed (§9.7, Module 7).
+3. **Accounts worksheet:** separate worksheet now, later, or never (§8.4; revisit after Module 1).
+4. **Built-in category renaming:** fixed names (recommended) vs user-renamable built-ins (§5.2).
+5. **OCR/extraction package:** on-device approach selection in Module 7 (§9.4); cloud extraction stays out of scope unless explicitly approved with consent design.
+6. **Share-intake implementation:** established plugin vs custom channel (§10.3, Module 7).
+7. **Chart package:** selection in Module 8 (no chart package exists today).
+8. **Notification scheduler package:** selection in Module 5 (generic scheduler, §13).
+9. **App-lock mechanism:** biometric/PIN details + PIN storage mechanism (Module 12).
+10. **History purge:** whether `TransactionHistory` can ever be purged by the user (§5.2).
+11. **Deep links:** deferred; decide if/when a scheme is needed (no proposal in V1).
+12. **Split sync:** whether split data ever syncs (local-only in V1 design; revisit in Module 13).
+13. **`_meta` worksheet placement/format detail:** exact cell layout of the V2 `_meta` worksheet (Module 1 implementation detail; the version-2 marker requirement is decided).
 
 ### 16.3 Appendix — audit evidence index
 
@@ -872,6 +959,7 @@ Money precision/rounding; account balances; transfers; card purchase/payment; re
 - Commands run (disposable copy): `flutter pub get`, `flutter analyze` (4 infos), `flutter test` (85 pass / 1 pre-existing failure). No code was modified in the audited copy for the purpose of the audit; `pub get` artifacts stayed in the disposable copy.
 - GitHub API checks: master ref, PR #1/#2 merge state, blueprint-branch absence — all before any branch/commit work.
 - This task changed **no** Dart/Kotlin code, ran **no** build_runner generation for application code, added/removed **no** dependencies, changed **no** schema version, and reset **no** database (local or remote). The only files created are the two architecture documents on the blueprint branch.
+- **Review corrections round 2 (2026-11-01):** docs-only corrections applied on branch head `c4ba82b6` (see the revision note in `architecture-decisions.md`). No code was re-audited — the baseline tree is unchanged since Module 0 — and no code, schema, dependency, Sheets or database state was touched. The corrections resolve the modelling contradictions listed in §16.1/ADR amendments; the remaining genuine unresolved questions are §16.2.
 
 ---
 
