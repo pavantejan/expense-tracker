@@ -133,9 +133,12 @@ class FakeSheetsBackend implements SheetsSyncBackend {
 }
 
 /// Fake store with conditional acknowledgement: a row is marked
-/// synced only when the stored revision (updatedAt + deleted) and
-/// pending state still match the uploaded snapshot. Editing a
-/// transaction advances its revision and keeps it pending.
+/// synced only when the stored integer revision ([SyncTransaction.syncRevision]
+/// + deleted) and pending state still match the uploaded
+/// snapshot. Editing a transaction advances its revision and
+/// keeps it pending. Mirrors the production rule in
+/// `markTransactionSyncedIfUnchanged`: `updatedAt` is timestamp
+/// metadata, never the acknowledgement token.
 class FakeStore implements SyncTransactionStore {
   FakeStore(List<SyncTransaction> initial) {
     for (final tx in initial) {
@@ -181,6 +184,7 @@ class FakeStore implements SyncTransactionStore {
         paymentMethod: old.paymentMethod,
         notes: old.notes,
         updatedAt: nextUpdatedAt,
+        syncRevision: old.syncRevision + 1,
         deleted: deleted ?? old.deleted,
       ),
       pending: true,
@@ -202,7 +206,7 @@ class FakeStore implements SyncTransactionStore {
     if (entry == null || !entry.pending) {
       return false;
     }
-    if (entry.tx.updatedAt != transaction.updatedAt ||
+    if (entry.tx.syncRevision != transaction.syncRevision ||
         entry.tx.deleted != transaction.deleted) {
       return false;
     }
@@ -230,6 +234,7 @@ SyncTransaction makeTx({
   String paymentMethod = 'UPI',
   String? notes,
   DateTime? updatedAt,
+  int syncRevision = 0,
   bool deleted = false,
 }) {
   final when = date ?? DateTime(2026, 3, 10);
@@ -244,6 +249,7 @@ SyncTransaction makeTx({
     paymentMethod: paymentMethod,
     notes: notes,
     updatedAt: updatedAt ?? DateTime(2026, 3, 10, 12),
+    syncRevision: syncRevision,
     deleted: deleted,
   );
 }

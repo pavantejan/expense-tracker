@@ -37,6 +37,7 @@ class DriftSyncTransactionStore implements SyncTransactionStore {
             paymentMethod: row.paymentMethod,
             notes: row.notes,
             updatedAt: row.updatedAt,
+            syncRevision: row.syncRevision,
             deleted: row.deleted,
           ),
         )
@@ -47,7 +48,7 @@ class DriftSyncTransactionStore implements SyncTransactionStore {
   Future<bool> markSynced(SyncTransaction transaction) {
     return transactionRepository.markTransactionSyncedIfUnchanged(
       id: transaction.localId,
-      updatedAt: transaction.updatedAt,
+      syncRevision: transaction.syncRevision,
       deleted: transaction.deleted,
     );
   }

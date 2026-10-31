@@ -194,21 +194,32 @@ The notes below supersede the corresponding claims in the first
 version of this document. The first PR commit is not rewritten;
 corrections land as a follow-up commit on the same branch.
 
-- **Conditional acknowledgement (review §2).** The engine no
-  longer calls an unconditional mark-synced. The repository now
-  exposes `markTransactionSyncedIfUnchanged(id, updatedAt,
-  deleted)`, which updates only when the stored row still has
-  the uploaded revision, the same deleted state, and status
+- **Conditional acknowledgement (review §2, superseded by the
+  schema-v7 correction below).** The engine no longer calls an
+  unconditional mark-synced. The repository exposes
+  `markTransactionSyncedIfUnchanged(id, syncRevision, deleted)`,
+  which updates only when the stored row still has the uploaded
+  integer revision, the same deleted state, and status
   `pending`. Zero affected rows means the transaction stays
-  pending. Every local mutation — edit, delete, and restore —
-  now advances `updatedAt` monotonically (at least 1ms beyond
-  the previous stored value, at millisecond precision), so
-  `updatedAt` is a usable revision under Drift/SQLite
-  millisecond storage. A dedicated integer revision column
-  would be stronger if storage truncated below milliseconds;
-  it requires `build_runner` regeneration and is left as a
-  documented follow-up, not hand-edited generated code.
-  `updatedAt` is never changed by the acknowledgement itself.
+  pending. `updatedAt` is a timestamp only — it is NOT the
+  concurrency token. (An earlier version of this note claimed
+  `updatedAt` was a usable revision because Drift stored
+  DateTime values at millisecond precision; that claim was
+  false. Drift's default SQLite `dateTime()` storage uses Unix
+  timestamps in seconds, so same-second mutations could share
+  an `updatedAt` value and a stale acknowledgement could mark
+  newer local data as synced.)
+- **Sync revision (blocking review, schema v7).** Transactions
+  carry a local-only integer `syncRevision` column, added by a
+  v6→v7 migration that preserves all rows and initializes
+  existing rows to revision 0. Every local mutation — edit,
+  delete, restore, and custom-category rename — increments the
+  revision by one, atomically with the mutation. New
+  transactions start at revision 0. `SyncTransaction` carries
+  the revision as local acknowledgement metadata only; it is
+  never written to Google Sheets and the remote sheet format
+  (headers A:J) is unchanged. `updatedAt` remains timestamp
+  metadata, sorting input, and the sheet's `UpdatedAt` value.
 - **Coordinator trigger race (review §3).** `requestSync()` no
   longer merely joins a running run. A trigger during a run
   sets a rerun flag; the run drains by re-reading pending work
@@ -363,7 +374,9 @@ corrections land as a follow-up commit on the same branch.
   (the per-transaction spreadsheet creator) is removed; its two
   callers are rewired to the coordinator/backend. `GoogleDriveService`
   is reused unchanged. No pubspec / dependency changes. No Drift
-  migration (schema version stays 6).
+  migration in that commit (schema version stayed 6 at the
+  time; the blocking-review correction adds the v7
+  `syncRevision` migration described above).
 
 ## Verification — Flutter checks actually run (31 Oct 2026)
 

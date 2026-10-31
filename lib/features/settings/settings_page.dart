@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/auth/google_auth_service.dart';
 import '../../core/sync/google_sheets_backend.dart';
 import '../../core/sync/sync_coordinator.dart';
+import '../categories/categories_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -574,6 +575,39 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ],
               ),
+            ),
+          ),
+
+          // ======================================================
+          // CATEGORIES
+          // ======================================================
+          const SizedBox(height: 24),
+
+          Text(
+            'Categories',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Card(
+            child: ListTile(
+              leading: const CircleAvatar(child: Icon(Icons.category_rounded)),
+              title: const Text(
+                'Custom categories',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'Add, edit, and delete your own expense categories.',
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const CategoriesPage()),
+                );
+              },
             ),
           ),
 

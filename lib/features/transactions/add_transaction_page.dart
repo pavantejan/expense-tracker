@@ -6,6 +6,8 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/database/repository_provider.dart';
 import '../../data/database/app_database.dart';
+import '../../data/repositories/custom_category_repository.dart';
+import '../../data/repositories/transaction_repository.dart';
 
 import '../../core/notifications/notification_manager.dart';
 import '../../data/notifications/notification.dart';
@@ -14,9 +16,19 @@ import '../../core/categories/category.dart';
 import '../../core/sync/sync_coordinator.dart';
 
 class AddTransactionPage extends StatefulWidget {
-  const AddTransactionPage({super.key, this.transactionId});
+  const AddTransactionPage({
+    super.key,
+    this.transactionId,
+    this.transactionRepository,
+    this.customCategoryRepository,
+  });
 
   final int? transactionId;
+
+  /// Injected for tests; production code uses the app-wide
+  /// repositories backed by the real Drift database.
+  final TransactionRepository? transactionRepository;
+  final CustomCategoryRepository? customCategoryRepository;
 
   bool get isEditMode => transactionId != null;
 
@@ -25,10 +37,22 @@ class AddTransactionPage extends StatefulWidget {
 }
 
 class _AddTransactionPageState extends State<AddTransactionPage> {
+  TransactionRepository get _transactionRepository =>
+      widget.transactionRepository ?? transactionRepository;
+
+  CustomCategoryRepository get _customCategoryRepository =>
+      widget.customCategoryRepository ?? customCategoryRepository;
+
   String _type = 'Expense';
   String _category = 'Food';
   String _paymentMethod = 'UPI';
   DateTime _selectedDate = DateTime.now();
+
+  /// Custom categories loaded once when this page opens. The
+  /// page is recreated on every navigation to it, so a
+  /// one-time load is enough; category management happens on
+  /// its own page.
+  List<CustomCategory> _customCategories = [];
 
   final _amountController = TextEditingController();
   final _descriptionController = TextEditingController();
@@ -44,6 +68,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   void initState() {
     super.initState();
 
+    unawaited(_loadCustomCategories());
     if (widget.transactionId != null) {
       _loadTransaction(widget.transactionId!);
     }
@@ -61,8 +86,18 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   // LOAD EXISTING TRANSACTION
   // ============================================================
 
+  Future<void> _loadCustomCategories() async {
+    final categories = await _customCategoryRepository.getAllCategories();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _customCategories = categories;
+    });
+  }
+
   Future<void> _loadTransaction(int id) async {
-    final transaction = await transactionRepository.getTransactionById(id);
+    final transaction = await _transactionRepository.getTransactionById(id);
 
     if (!mounted || transaction == null) {
       return;
@@ -141,7 +176,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       // ========================================================
 
       if (widget.transactionId == null) {
-        await transactionRepository.addTransaction(
+        await _transactionRepository.addTransaction(
           TransactionsCompanion.insert(
             uuid: _uuid.v4(),
             type: _type,
@@ -182,7 +217,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       // EDIT EXISTING TRANSACTION
       // ========================================================
       else {
-        await transactionRepository.updateTransaction(
+        await _transactionRepository.updateTransaction(
           widget.transactionId!,
           TransactionsCompanion(
             type: Value(_type),
@@ -236,6 +271,51 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Built-in categories plus saved custom categories. If the
+    // transaction being edited uses a category that no longer
+    // exists as a built-in or custom category (for example a
+    // deleted custom category), its stored text is kept as an
+    // extra item so the dropdown never asserts and never
+    // silently replaces it with Food or Other.
+    final categoryItems = <DropdownMenuItem<String>>[
+      for (final category in expenseCategories)
+        DropdownMenuItem(
+          value: category.name,
+          child: Row(
+            children: [
+              Icon(category.icon, size: 20),
+              const SizedBox(width: 12),
+              Text(category.name),
+            ],
+          ),
+        ),
+      for (final category in _customCategories)
+        DropdownMenuItem(
+          value: category.name,
+          child: Row(
+            children: [
+              Icon(categoryIconData(category.iconCodePoint), size: 20),
+              const SizedBox(width: 12),
+              Text(category.name),
+            ],
+          ),
+        ),
+    ];
+    if (!categoryItems.any((item) => item.value == _category)) {
+      categoryItems.add(
+        DropdownMenuItem(
+          value: _category,
+          child: Row(
+            children: [
+              const Icon(Icons.category_rounded, size: 20),
+              const SizedBox(width: 12),
+              Text(_category),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.isEditMode ? 'Edit Transaction' : 'Add Transaction'),
@@ -300,20 +380,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                 labelText: 'Category',
                 border: OutlineInputBorder(),
               ),
-              items: expenseCategories
-                  .map(
-                    (category) => DropdownMenuItem(
-                      value: category.name,
-                      child: Row(
-                        children: [
-                          Icon(category.icon, size: 20),
-                          const SizedBox(width: 12),
-                          Text(category.name),
-                        ],
-                      ),
-                    ),
-                  )
-                  .toList(),
+              items: categoryItems,
               onChanged: _isSaving
                   ? null
                   : (value) {
