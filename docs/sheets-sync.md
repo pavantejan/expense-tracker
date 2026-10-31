@@ -1,10 +1,19 @@
 # Google Sheets sync — working notes
 
 Branch: `feature/fix-google-sheets-sync`, base `master` (2231948, 31 Oct 2026).
-Environment note: no Flutter/Dart toolchain in this environment
-(`which flutter dart` empty), so `dart format`, `flutter analyze`,
-`flutter test`, and an Android build could NOT be run here. They must
-be run by the reviewer / owner. Nothing in this PR claims otherwise.
+Environment note (corrected 31 Oct 2026): a Flutter/Dart
+toolchain DOES exist in this environment after all — Flutter
+3.47.2 / Dart 3.13.2 at `~/workspace/build-verify/flutter/`,
+left over from earlier SpendMate work. Earlier claims in
+this document and in the PR description that no toolchain
+existed were based only on `which flutter dart` and were
+wrong. The checks below were run with that toolchain on
+31 Oct 2026; the "NOT run" disclosures in earlier PR
+description sections are superseded by the verification
+section at the end of this document. The Android SDK in the
+same directory contains only cmdline-tools and is not a
+valid SDK for Flutter, and no JDK is installed, so an APK
+build could not run here (see below).
 
 ## Defects verified against current master code
 
@@ -351,3 +360,125 @@ corrections land as a follow-up commit on the same branch.
   callers are rewired to the coordinator/backend. `GoogleDriveService`
   is reused unchanged. No pubspec / dependency changes. No Drift
   migration (schema version stays 6).
+
+## Verification — Flutter checks actually run (31 Oct 2026)
+
+Toolchain: Flutter 3.47.2 / Dart 3.13.2
+(`~/workspace/build-verify/flutter/`), `flutter pub get`
+succeeded (exit 0, `pubspec.lock` unchanged).
+
+- `dart format` was run only on the files this PR changed
+  (6 Dart files), not repo-wide: a repo-wide
+  `dart format lib test` check shows many pre-existing master
+  files are unformatted, and reformatting them would touch
+  unrelated files. After formatting, a check run reports
+  "Formatted 6 files (0 changed)".
+- `flutter analyze` (first run, before the fix below):
+  14 issues — 6 errors, all in
+  `google_sheets_backend.dart`: a field and a method both
+  named `_client` (duplicate definition, and the field
+  shadowed the method so call sites saw a nullable value),
+  plus 8 infos. That means the pushed head at the time did
+  NOT compile; the error predates the third commit (the
+  `_client` field/method pair came from the first commit)
+  and was missed because analyze had never been run.
+  Fixed by renaming the field to `_cachedClient`, plus a
+  `??=` tidy in `google_auth_service.dart` for a
+  `prefer_conditional_assignment` info. Second run:
+  "5 issues found" — 0 errors, 0 warnings, 5 infos only
+  (pre-existing initializing-formal patterns and one
+  `use_build_context_synchronously` info in Settings).
+- `flutter test`: `test/sheets_sync_test.dart` — 44/44
+  passed. The full suite is 44 passed, 1 failed: the
+  pre-existing default `test/widget_test.dart` ("Expense
+  Tracker app loads") fails with "A Timer is still pending"
+  — the stack shows the timer is created by `drift_flutter`
+  when opening the database while the dashboard builds, a
+  master-code path this PR did not touch (no sync code in
+  the stack). Left failing and disclosed, not papered over.
+- `flutter build apk --debug`: NOT completed. Flutter
+  reports "[!] No Android SDK found" — the only SDK
+  directory present contains cmdline-tools only and no
+  JDK is installed, so no valid Android SDK exists here.
+  An APK build still needs Pavan's Windows machine (and
+  the known sandbox Gradle loopback limitation applies
+  there too if attempted here). No APK or build pass is
+  claimed.
+
+## Legacy Google Sheets Migration Limitations
+
+This section states what this PR does NOT do with Google
+Sheets data created before it. Do not read any part of
+this PR as automatic migration or complete historical
+reconciliation — neither is claimed, and neither happens.
+
+1. **Previous `Expenses` worksheets are not automatically
+   imported.** The previous implementation wrote rows to a
+   single worksheet named `Expenses` inside a freshly
+   created spreadsheet per transaction. This PR does not
+   read, copy, or import those `Expenses` worksheets into
+   the new year-based worksheets. Rows that exist only in
+   an old `Expenses` worksheet do not appear in the new
+   master spreadsheet unless they are also present as
+   locally stored Drift transactions (see point 4).
+2. **Legacy A:E header extension applies to year-named
+   worksheets only.** The A:E → A:J header extension in
+   `ensureYearSheet` runs only for worksheets whose title
+   is a calendar year (for example `2026`), because
+   worksheet discovery (`listYearSheets`) recognises only
+   titles that parse as years. A worksheet titled
+   `Expenses`, or any other non-year title, is never
+   listed, never ensured, and never has its header
+   extended by this code.
+3. **Existing spreadsheets outside the app-managed folder
+   are not automatically discovered.** The app requests
+   only `drive.file` (plus `spreadsheets`). Under
+   `drive.file`, the app is granted access only to files
+   it created or files the user opened with it — not to
+   the whole Drive. A spreadsheet the user created
+   manually in Drive, including one holding old expense
+   records, is therefore not guaranteed to be found, even
+   if it has the same name. The app creates and uses its
+   own app-created folder and spreadsheet instead. Scopes
+   were deliberately not broadened to work around this.
+   See the Google Drive OAuth scope guidance:
+   https://developers.google.com/workspace/drive/api/guides/api-specific-auth
+4. **Old files remain untouched. The new master
+   spreadsheet is populated from locally stored Drift
+   transactions.** Nothing in this PR deletes, renames,
+   edits, or merges any pre-existing Drive file or
+   worksheet. The new master spreadsheet starts empty
+   apart from year-worksheet headers and is filled only
+   from the local Drift database, which is the source of
+   truth: each pending local transaction is upserted by
+   UUID into its year worksheet. A record that is not in
+   the local database is not written anywhere by sync.
+5. **Historical records that exist only in old Google
+   Sheets require a separate manual migration or a future
+   Google Picker/import feature.** If the only copy of a
+   historical record lives in an old spreadsheet, the user
+   must reconcile it by hand (for example, re-enter it in
+   the app, or copy the row by hand into the new
+   spreadsheet — understanding that a hand-copied row has
+   no UUID and will not be managed by sync). A future
+   feature could let the user pick an existing spreadsheet
+   or folder with the Google Picker (which grants access
+   to the picked file) and import its rows; that feature
+   does not exist in this PR and is not promised here.
+   Authentication for any such future import would still
+   be user-initiated from Settings, under the same
+   google_sign_in 7.2.0 separation used here:
+   https://pub.dev/packages/google_sign_in/versions/7.2.0
+6. **No automatic migration or complete historical
+   reconciliation is claimed.** Do not describe this PR,
+   in release notes, messages, or documentation, as
+   migrating old Sheets data, importing history, or
+   reconciling all historical records. What it does is
+   narrower: from now on, locally stored transactions are
+   backed up, by UUID, into year worksheets in one
+   app-managed spreadsheet, using the Sheets values API:
+   https://developers.google.com/workspace/sheets/api/guides/values
+   History that predates the local database, or that
+   lives only in old spreadsheets, stays where it is
+   until the manual or future-import path in point 5 is
+   used.
