@@ -272,13 +272,23 @@ void main() {
     FinancialTransactionsCompanion transactionWith({
       Value<String?> categoryId = const Value.absent(),
       Value<String?> reversesId = const Value.absent(),
+      Value<String?> relatedId = const Value.absent(),
+      Value<String?> sourceId = const Value.absent(),
+      Value<String?> destinationId = const Value.absent(),
+      Value<String?> refundId = const Value.absent(),
+      String kind = 'expense',
+      String? uuid,
     }) {
       final now = DateTime(2026, 1, 15);
       return FinancialTransactionsCompanion.insert(
-        uuid: 'v2-txn-${DateTime.now().microsecondsSinceEpoch}',
-        kind: 'expense',
+        uuid: uuid ?? 'v2-txn-${DateTime.now().microsecondsSinceEpoch}',
+        kind: kind,
         categoryId: categoryId,
         reversesTransactionId: reversesId,
+        relatedTransactionId: relatedId,
+        sourceAccountId: sourceId,
+        destinationAccountId: destinationId,
+        refundAccountId: refundId,
         amountMinorUnits: 50000,
         paymentChannel: 'UPI',
         occurredAt: now,
@@ -289,6 +299,72 @@ void main() {
         syncStatus: 'pending',
       );
     }
+
+    Future<void> insertAccount(String uuid) async {
+      await database
+          .into(database.accounts)
+          .insert(
+            AccountsCompanion.insert(uuid: uuid, name: 'Bank', kind: 'bank'),
+          );
+    }
+
+    test(
+      'rejects a ledger account referencing a missing user account',
+      () async {
+        // No category reference: the user-account FK is the only
+        // reference that can reject this row.
+        await expectLater(
+          () => database
+              .into(database.ledgerAccounts)
+              .insert(
+                LedgerAccountsCompanion.insert(
+                  ledgerAccountId: 'ledger-missing-account',
+                  kind: 'user_asset',
+                  userAccountId: const Value('missing-account'),
+                  normalBalance: 'debit',
+                ),
+              ),
+          throwsA(isA<Exception>()),
+        );
+      },
+    );
+
+    test('rejects a ledger account referencing a missing category', () async {
+      // No user-account reference: the category FK is the only
+      // reference that can reject this row.
+      await expectLater(
+        () => database
+            .into(database.ledgerAccounts)
+            .insert(
+              LedgerAccountsCompanion.insert(
+                ledgerAccountId: 'expense:missing-category',
+                kind: 'system_expense',
+                categoryId: const Value('missing-category'),
+                isSystem: const Value(true),
+                normalBalance: 'debit',
+              ),
+            ),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test('rejects a category referencing a missing parent category', () async {
+      await expectLater(
+        () => database
+            .into(database.categories)
+            .insert(
+              CategoriesCompanion.insert(
+                categoryId: 'custom_orphan-parent',
+                name: 'Orphan',
+                iconCodePoint: 0xe000,
+                kind: 'both',
+                origin: 'custom',
+                parentCategoryId: const Value('missing-category'),
+              ),
+            ),
+        throwsA(isA<Exception>()),
+      );
+    });
 
     test('rejects a transaction referencing a missing category', () async {
       await expectLater(
@@ -303,24 +379,90 @@ void main() {
       );
     });
 
-    test('rejects a transaction referencing a missing account', () async {
+    test(
+      'rejects a transaction referencing a missing related transaction',
+      () async {
+        // Category is a valid seeded row, so the related-transaction
+        // FK is the only reference that can reject this row.
+        await expectLater(
+          () => database
+              .into(database.financialTransactions)
+              .insert(
+                transactionWith(
+                  categoryId: const Value('food'),
+                  relatedId: const Value('missing-txn'),
+                ),
+              ),
+          throwsA(isA<Exception>()),
+        );
+      },
+    );
+
+    test('rejects a transfer referencing a missing source account', () async {
+      // Destination is a valid inserted account; category is absent,
+      // so the source-account FK is the only reference that can
+      // reject this row.
+      await insertAccount('acct-dest-valid');
       await expectLater(
         () => database
             .into(database.financialTransactions)
             .insert(
-              FinancialTransactionsCompanion.insert(
-                uuid: 'v2-txn-missing-account',
+              transactionWith(
                 kind: 'transfer',
-                sourceAccountId: const Value('missing-account'),
-                destinationAccountId: const Value('missing-account-2'),
-                amountMinorUnits: 1000,
-                paymentChannel: 'Bank Transfer',
-                occurredAt: DateTime(2026, 1, 15),
-                status: 'active',
-                source: 'manual',
-                createdAt: DateTime(2026, 1, 15),
-                updatedAt: DateTime(2026, 1, 15),
-                syncStatus: 'pending',
+                sourceId: const Value('missing-account'),
+                destinationId: const Value('acct-dest-valid'),
+                uuid: 'v2-txn-missing-source',
+              ),
+            ),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test(
+      'rejects a transfer referencing a missing destination account',
+      () async {
+        // Source is a valid inserted account; category is absent,
+        // so the destination-account FK is the only reference that
+        // can reject this row.
+        await insertAccount('acct-source-valid');
+        await expectLater(
+          () => database
+              .into(database.financialTransactions)
+              .insert(
+                transactionWith(
+                  kind: 'transfer',
+                  sourceId: const Value('acct-source-valid'),
+                  destinationId: const Value('missing-account'),
+                  uuid: 'v2-txn-missing-destination',
+                ),
+              ),
+          throwsA(isA<Exception>()),
+        );
+      },
+    );
+
+    test('rejects a refund referencing a missing refund account', () async {
+      // Original transaction and category are both valid, so the
+      // refund-account FK is the only reference that can reject
+      // this row.
+      await database
+          .into(database.financialTransactions)
+          .insert(
+            transactionWith(
+              categoryId: const Value('food'),
+              uuid: 'v2-txn-refund-original',
+            ),
+          );
+      await expectLater(
+        () => database
+            .into(database.financialTransactions)
+            .insert(
+              transactionWith(
+                kind: 'refund',
+                categoryId: const Value('food'),
+                reversesId: const Value('v2-txn-refund-original'),
+                refundId: const Value('missing-account'),
+                uuid: 'v2-txn-missing-refund-account',
               ),
             ),
         throwsA(isA<Exception>()),
@@ -350,7 +492,9 @@ void main() {
       );
     });
 
-    test('rejects postings referencing missing rows', () async {
+    test('rejects a posting referencing a missing transaction', () async {
+      // Ledger account is the valid seeded opening_equity row, so the
+      // transaction FK is the only reference that can reject this row.
       await expectLater(
         () => database
             .into(database.postings)
@@ -366,17 +510,41 @@ void main() {
             ),
         throwsA(isA<Exception>()),
       );
+    });
+
+    test('rejects a posting referencing a missing ledger account', () async {
+      // Transaction is a valid inserted row, so the ledger-account FK
+      // is the only reference that can reject this row.
+      final transactionId = await database
+          .into(database.financialTransactions)
+          .insert(transactionWith(categoryId: const Value('food')));
       await expectLater(
         () => database
             .into(database.postings)
             .insert(
               PostingsCompanion.insert(
                 uuid: 'v2-posting-missing-ledger',
-                transactionId: 99999,
+                transactionId: transactionId,
                 ledgerAccountId: 'missing-ledger',
                 direction: 'debit',
                 amountMinorUnits: 100,
                 postingDate: DateTime(2026, 1, 15),
+              ),
+            ),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test('rejects history referencing a missing transaction', () async {
+      await expectLater(
+        () => database
+            .into(database.transactionHistory)
+            .insert(
+              TransactionHistoryCompanion.insert(
+                uuid: 'v2-history-missing-txn',
+                transactionId: 99999,
+                changedAt: DateTime(2026, 1, 15),
+                changeKind: 'created',
               ),
             ),
         throwsA(isA<Exception>()),
@@ -478,7 +646,7 @@ void main() {
       },
     );
 
-    test('rejects zero and negative posting and transaction amounts', () async {
+    test('rejects zero posting and transaction amounts', () async {
       final transactionId = await database
           .into(database.financialTransactions)
           .insert(transactionWith(categoryId: const Value('food')));
@@ -505,6 +673,46 @@ void main() {
                 uuid: 'v2-txn-zero',
                 kind: 'expense',
                 amountMinorUnits: 0,
+                paymentChannel: 'UPI',
+                occurredAt: DateTime(2026, 1, 15),
+                status: 'active',
+                source: 'manual',
+                createdAt: DateTime(2026, 1, 15),
+                updatedAt: DateTime(2026, 1, 15),
+                syncStatus: 'pending',
+              ),
+            ),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test('rejects negative posting and transaction amounts', () async {
+      final transactionId = await database
+          .into(database.financialTransactions)
+          .insert(transactionWith(categoryId: const Value('food')));
+      await expectLater(
+        () => database
+            .into(database.postings)
+            .insert(
+              PostingsCompanion.insert(
+                uuid: 'v2-posting-negative',
+                transactionId: transactionId,
+                ledgerAccountId: 'opening_equity',
+                direction: 'debit',
+                amountMinorUnits: -100,
+                postingDate: DateTime(2026, 1, 15),
+              ),
+            ),
+        throwsA(isA<Exception>()),
+      );
+      await expectLater(
+        () => database
+            .into(database.financialTransactions)
+            .insert(
+              FinancialTransactionsCompanion.insert(
+                uuid: 'v2-txn-negative',
+                kind: 'expense',
+                amountMinorUnits: -100,
                 paymentChannel: 'UPI',
                 occurredAt: DateTime(2026, 1, 15),
                 status: 'active',

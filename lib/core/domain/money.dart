@@ -4,7 +4,9 @@
 // (paise for INR). This is the only place that converts between minor
 // units, decimal strings, and display strings. No financial arithmetic
 // in this file uses `double`: parsing and formatting use decimal-string
-// and integer arithmetic only.
+// and integer arithmetic only. Addition, subtraction, negation and
+// absolute value use BigInt intermediates and reject results outside
+// the signed 64-bit range instead of silently wrapping.
 //
 // Two parsing rules, kept separate on purpose:
 //
@@ -21,36 +23,81 @@
 // that boundary; this type does not forbid negative values outright so
 // that subtraction and comparison remain usable.
 
-/// Number of minor units per major unit for a currency code.
-int minorUnitDigitsForCurrency(String currencyCode) {
-  switch (currencyCode) {
-    case 'JPY':
-    case 'KRW':
-      return 0;
-    default:
-      // INR, USD, EUR, GBP and other two-decimal currencies. V1 uses INR
-      // only; the code is carried on every money-bearing row so a future
-      // currency choice does not need a schema redesign (ADR-002).
-      return 2;
+/// Currency codes with explicitly defined minor-unit precision and
+/// display symbols.
+///
+/// V1 stores INR only. This registry is metadata for parsing and
+/// formatting only: it is not a multi-currency feature and no
+/// conversion exists. A code outside this registry is rejected
+/// instead of silently assuming two decimal places.
+const Map<String, int> _minorUnitDigitsByCurrency = <String, int>{
+  'INR': 2,
+  'USD': 2,
+  'EUR': 2,
+  'GBP': 2,
+  'JPY': 0,
+  'KRW': 0,
+};
+
+const Map<String, String> _currencySymbols = <String, String>{
+  'INR': '₹',
+  'USD': r'$',
+  'EUR': '€',
+  'GBP': '£',
+  'JPY': '¥',
+  'KRW': '₩',
+};
+
+/// Currency codes accepted by [Money], in registry order.
+Set<String> get supportedCurrencyCodes =>
+    _minorUnitDigitsByCurrency.keys.toSet();
+
+/// Whether [currencyCode] has an explicit registry entry.
+bool isSupportedCurrencyCode(String currencyCode) =>
+    _minorUnitDigitsByCurrency.containsKey(currencyCode);
+
+void _requireSupportedCurrency(String currencyCode) {
+  if (!isSupportedCurrencyCode(currencyCode)) {
+    throw ArgumentError(
+      'Unsupported currency code: $currencyCode. '
+      'Supported codes: ${supportedCurrencyCodes.join(', ')}.',
+    );
   }
 }
 
-/// Display symbol for a currency code, or the code itself when unknown.
+/// Number of minor units per major unit for a currency code.
+///
+/// Throws [ArgumentError] for a code with no registry entry.
+int minorUnitDigitsForCurrency(String currencyCode) {
+  _requireSupportedCurrency(currencyCode);
+  return _minorUnitDigitsByCurrency[currencyCode]!;
+}
+
+/// Display symbol for a currency code.
+///
+/// Throws [ArgumentError] for a code with no registry entry.
 String currencySymbolFor(String currencyCode) {
-  switch (currencyCode) {
-    case 'INR':
-      return '₹';
-    case 'USD':
-      return r'$';
-    case 'EUR':
-      return '€';
-    case 'GBP':
-      return '£';
-    case 'JPY':
-      return '¥';
-    default:
-      return currencyCode;
+  _requireSupportedCurrency(currencyCode);
+  return _currencySymbols[currencyCode]!;
+}
+
+/// Largest and smallest signed 64-bit integer values. Persisted amounts
+/// are stored in a signed 64-bit column, so arithmetic results must
+/// stay inside these bounds.
+const int _maxInt64 = 9223372036854775807;
+const int _minInt64 = -9223372036854775808;
+
+/// Converts a [BigInt] arithmetic result to an `int`, throwing a
+/// [StateError] when it cannot be represented as a signed 64-bit
+/// integer instead of silently wrapping.
+int _checkedInt64(BigInt value) {
+  if (value < BigInt.from(_minInt64) || value > BigInt.from(_maxInt64)) {
+    throw StateError(
+      'Money arithmetic result $value cannot be represented as a '
+      'signed 64-bit integer.',
+    );
   }
+  return value.toInt();
 }
 
 BigInt _powerOfTen(int exponent) {
@@ -95,12 +142,28 @@ String _groupIndian(String digits) {
 }
 
 /// An immutable amount in integer minor units for one currency.
+///
+/// The currency code must have an explicit entry in the supported
+/// registry; constructing money in an unsupported code throws
+/// [ArgumentError]. V1 stores INR only.
 class Money {
   /// Creates money from an integer minor-unit amount (paise for INR).
-  const Money(this.amountMinorUnits, this.currencyCode);
+  ///
+  /// Throws [ArgumentError] for an unsupported currency code.
+  factory Money(int amountMinorUnits, String currencyCode) {
+    _requireSupportedCurrency(currencyCode);
+    return Money._(amountMinorUnits, currencyCode);
+  }
+
+  const Money._(this.amountMinorUnits, this.currencyCode);
 
   /// Zero money in [currencyCode].
-  const Money.zero(this.currencyCode) : amountMinorUnits = 0;
+  ///
+  /// Throws [ArgumentError] for an unsupported currency code.
+  factory Money.zero(String currencyCode) {
+    _requireSupportedCurrency(currencyCode);
+    return Money._(0, currencyCode);
+  }
 
   /// Amount in minor units. May be negative only as an arithmetic
   /// result; never persist a negative amount as a stored amount.
@@ -122,7 +185,11 @@ class Money {
   bool get isNegative => amountMinorUnits < 0;
 
   /// The absolute value, in the same currency.
-  Money abs() => Money(amountMinorUnits.abs(), currencyCode);
+  ///
+  /// Throws [StateError] for the minimum signed 64-bit value, whose
+  /// absolute value cannot be represented.
+  Money abs() =>
+      Money(_checkedInt64(BigInt.from(amountMinorUnits).abs()), currencyCode);
 
   /// Parses a decimal string strictly, without rounding.
   ///
@@ -139,6 +206,9 @@ class Money {
   }
 
   /// Parses a decimal string, returning null instead of throwing.
+  ///
+  /// Only malformed input returns null. An unsupported [currencyCode]
+  /// still throws [ArgumentError].
   static Money? tryParse(String input, {String currencyCode = 'INR'}) {
     try {
       return parse(input, currencyCode: currencyCode);
@@ -160,6 +230,9 @@ class Money {
   }
 
   /// Parses with normalisation, returning null instead of throwing.
+  ///
+  /// Only malformed input returns null. An unsupported [currencyCode]
+  /// still throws [ArgumentError].
   static Money? tryParseNormalised(
     String input, {
     String currencyCode = 'INR',
@@ -219,16 +292,25 @@ class Money {
       digits: digits,
       normalise: normalise,
     );
-    return negative ? -magnitude : magnitude;
+    // The magnitude may reach 2^63 only for a negative result: that is
+    // exactly the minimum signed 64-bit value and is representable.
+    // A positive result of the same magnitude is not.
+    final limit = negative
+        ? BigInt.from(_maxInt64) + BigInt.one
+        : BigInt.from(_maxInt64);
+    if (magnitude > limit) {
+      throw const FormatException('Amount is too large.');
+    }
+    final signed = negative ? -magnitude : magnitude;
+    return signed.toInt();
   }
 
-  static int _toMinorUnits({
+  static BigInt _toMinorUnits({
     required String integerPart,
     required String fractionalPart,
     required int digits,
     required bool normalise,
   }) {
-    final maxMinorUnits = BigInt.from(9223372036854775807);
     BigInt combined;
     if (fractionalPart.length <= digits) {
       final padded = fractionalPart.padRight(digits, '0');
@@ -244,10 +326,7 @@ class Money {
         combined += BigInt.one;
       }
     }
-    if (combined > maxMinorUnits) {
-      throw const FormatException('Amount is too large.');
-    }
-    return combined.toInt();
+    return combined;
   }
 
   /// Decimal string without grouping or a currency symbol, for example
@@ -287,17 +366,40 @@ class Money {
   @override
   String toString() => format();
 
+  /// Adds two amounts in the same currency.
+  ///
+  /// Throws [StateError] when the result cannot be represented as a
+  /// signed 64-bit integer.
   Money operator +(Money other) {
     _requireSameCurrency(other);
-    return Money(amountMinorUnits + other.amountMinorUnits, currencyCode);
+    return Money(
+      _checkedInt64(
+        BigInt.from(amountMinorUnits) + BigInt.from(other.amountMinorUnits),
+      ),
+      currencyCode,
+    );
   }
 
+  /// Subtracts two amounts in the same currency.
+  ///
+  /// Throws [StateError] when the result cannot be represented as a
+  /// signed 64-bit integer.
   Money operator -(Money other) {
     _requireSameCurrency(other);
-    return Money(amountMinorUnits - other.amountMinorUnits, currencyCode);
+    return Money(
+      _checkedInt64(
+        BigInt.from(amountMinorUnits) - BigInt.from(other.amountMinorUnits),
+      ),
+      currencyCode,
+    );
   }
 
-  Money operator -() => Money(-amountMinorUnits, currencyCode);
+  /// Negates the amount.
+  ///
+  /// Throws [StateError] for the minimum signed 64-bit value, whose
+  /// negation cannot be represented.
+  Money operator -() =>
+      Money(_checkedInt64(-BigInt.from(amountMinorUnits)), currencyCode);
 
   bool operator <(Money other) => compareTo(other) < 0;
   bool operator <=(Money other) => compareTo(other) <= 0;
