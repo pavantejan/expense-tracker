@@ -116,6 +116,14 @@ void main() {
     final openers = <String>[];
     for (final file in sources) {
       final text = file.readAsStringSync();
+      final normalized = file.path.replaceAll(r'\', '/');
+      if (normalized.endsWith('lib/core/backup/file_gateway.dart')) {
+        // The only file deletion in the app: the temporary copy used
+        // for sharing, inside the app's temporary directory.
+        expect(text, contains('getTemporaryDirectory()'));
+        expect(text, isNot(contains('getApplicationDocumentsDirectory')));
+        continue;
+      }
       expect(
         RegExp(r'\.delete(Sync)?\(').hasMatch(text) && text.contains('dart:io'),
         isFalse,

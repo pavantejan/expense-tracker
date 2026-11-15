@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../accounts/accounts_page.dart';
 import '../common/section_landing.dart';
+import '../settings/backup_page.dart';
 
 class ManagePage extends StatelessWidget {
   const ManagePage({super.key});
@@ -33,6 +34,13 @@ class ManagePage extends StatelessWidget {
           icon: Icons.savings_rounded,
           title: 'Savings goals',
           subtitle: 'Save towards what matters',
+        ),
+        SectionEntry(
+          key: const Key('manage-backup'),
+          icon: Icons.backup_rounded,
+          title: 'Backup & export',
+          subtitle: 'CSV export, full backup file, and restore',
+          page: (_) => const BackupPage(),
         ),
       ],
     );

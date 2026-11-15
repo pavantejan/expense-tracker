@@ -1,5 +1,6 @@
 import 'package:drift/native.dart';
 import 'package:expense_tracker/app/app_services.dart';
+import 'package:expense_tracker/core/backup/file_gateway.dart';
 import 'package:expense_tracker/core/database/database_factory.dart';
 import 'package:expense_tracker/core/sync/sync_errors.dart';
 import 'package:expense_tracker/core/sync/v2/sheets_v2_contract.dart';
@@ -48,11 +49,15 @@ class SignedOutBackend implements SheetsV2SyncBackend {
 /// Seeded in-memory services, offline. Widget tests must call
 /// [closeServices] in the test body: an open Drift connection leaves a
 /// Timer pending in the widget-test binding.
-Future<AppServices> createTestServices() async {
+Future<AppServices> createTestServices({FileGateway? files}) async {
   final database = await const AppDatabaseV2Factory().create(
     executor: NativeDatabase.memory(),
   );
-  return AppServices(database: database, syncBackend: SignedOutBackend());
+  return AppServices(
+    database: database,
+    syncBackend: SignedOutBackend(),
+    files: files,
+  );
 }
 
 Future<void> closeServices(WidgetTester tester, AppServices services) async {

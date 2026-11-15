@@ -7,6 +7,7 @@ import '../../core/auth/google_auth_service.dart';
 import '../../core/sync/v2/google_sheets_v2_backend.dart';
 import '../accounts/accounts_page.dart';
 import '../categories/categories_page.dart';
+import 'backup_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -632,6 +633,40 @@ class _SettingsPageState extends State<SettingsPage> {
                 Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const CategoriesPage()),
                 );
+              },
+            ),
+          ),
+
+          // ======================================================
+          // BACKUP AND EXPORT
+          // ======================================================
+          const SizedBox(height: 24),
+
+          Text(
+            'Backup and export',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Card(
+            child: ListTile(
+              key: const Key('open-backup'),
+              leading: const CircleAvatar(child: Icon(Icons.backup_rounded)),
+              title: const Text(
+                'Backup & export',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'CSV export, full backup file, and restore.',
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const BackupPage()));
               },
             ),
           ),

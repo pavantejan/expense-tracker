@@ -1,5 +1,7 @@
 import 'package:flutter/widgets.dart';
 
+import '../core/backup/backup_codec.dart';
+import '../core/backup/file_gateway.dart';
 import '../core/database/database_factory.dart';
 import '../core/sync/sync_coordinator.dart';
 import '../core/sync/v2/drift_v2_sync_store.dart';
@@ -20,16 +22,20 @@ import '../data/repositories/template_repository.dart';
 /// in-memory database and close it in the test body.
 class AppServices {
   /// [syncBackend] defaults to the real Google Sheets V2 backend;
-  /// tests pass a fake. [clock] is a test seam for the repositories.
+  /// tests pass a fake. [files] defaults to the platform file pickers.
+  /// [clock] is a test seam for the repositories.
   AppServices({
     required this.database,
     SheetsV2SyncBackend? syncBackend,
+    FileGateway? files,
     DateTime Function()? clock,
   }) : accounts = AccountRepository(database, clock: clock),
        categories = CategoryRepository(database),
        transactions = FinancialTransactionRepository(database, clock: clock),
        merchantsTags = MerchantTagRepository(database, clock: clock),
-       templates = TemplateRepository(database, clock: clock) {
+       templates = TemplateRepository(database, clock: clock),
+       backup = BackupCodec(database, clock: clock),
+       files = files ?? const PlatformFileGateway() {
     queries = LedgerQueryService(database, transactions);
     entries = QuickEntryService(
       database,
@@ -57,6 +63,8 @@ class AppServices {
   final FinancialTransactionRepository transactions;
   final MerchantTagRepository merchantsTags;
   final TemplateRepository templates;
+  final BackupCodec backup;
+  final FileGateway files;
   late final LedgerQueryService queries;
   late final QuickEntryService entries;
   late final SheetsSyncCoordinator sync;
