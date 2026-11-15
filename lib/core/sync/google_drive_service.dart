@@ -1,6 +1,30 @@
 import 'package:googleapis/drive/v3.dart' as drive;
 
 import '../auth/google_auth_service.dart';
+import 'v2/sheets_v2_contract.dart';
+
+const String _spreadsheetMimeTypeV2 = 'application/vnd.google-apps.spreadsheet';
+
+/// Drive query for the V2 spreadsheet: app-created, in [folderId],
+/// carrying the V2 `appProperties` marker. Never matches V1.
+String sheetsV2SpreadsheetQuery(String folderId) {
+  return "'$folderId' in parents "
+      "and mimeType = '$_spreadsheetMimeTypeV2' "
+      "and appProperties has { key='$sheetsV2AppPropertyKey' "
+      "and value='$sheetsV2AppPropertyValue' } "
+      'and trashed = false';
+}
+
+/// Metadata for creating the V2 spreadsheet.
+drive.File sheetsV2SpreadsheetMetadata(String folderId) {
+  return drive.File()
+    ..name = sheetsV2SpreadsheetTitle
+    ..mimeType = _spreadsheetMimeTypeV2
+    ..parents = <String>[folderId]
+    ..appProperties = <String, String>{
+      sheetsV2AppPropertyKey: sheetsV2AppPropertyValue,
+    };
+}
 
 class GoogleDriveSetupResult {
   const GoogleDriveSetupResult({
@@ -96,6 +120,51 @@ class GoogleDriveService {
       folderId: folderId,
       fileId: spreadsheetId,
       fileName: spreadsheet.name ?? _spreadsheetName,
+      webViewLink: spreadsheet.webViewLink,
+    );
+  }
+
+  /// Finds or creates the distinct V2 spreadsheet (ADR-015) inside the
+  /// app-created folder. Resolution is by the Drive `appProperties`
+  /// marker, never by name alone, so the V1 "Expense Tracker"
+  /// spreadsheet is never returned. The resolved id is used for the
+  /// current sync run only and is not persisted.
+  Future<GoogleDriveSetupResult> setupExpenseTrackerV2({
+    bool allowInteractiveAuthorization = false,
+  }) async {
+    final api = await _getDriveApi(
+      allowInteractiveAuthorization: allowInteractiveAuthorization,
+    );
+    final folder = await _findOrCreateExpenseTrackerFolder(api);
+    final folderId = folder.id;
+    if (folderId == null || folderId.isEmpty) {
+      throw StateError('Expense Tracker folder could not be created.');
+    }
+
+    final found = await api.files.list(
+      q: sheetsV2SpreadsheetQuery(folderId),
+      spaces: 'drive',
+      $fields: 'files(id,name,mimeType,webViewLink,parents,appProperties)',
+      pageSize: 10,
+    );
+    final files = found.files;
+    // Ambiguous duplicates: reuse the first, create nothing, delete
+    // nothing (same discipline as V1).
+    final spreadsheet = (files != null && files.isNotEmpty)
+        ? files.first
+        : await api.files.create(
+            sheetsV2SpreadsheetMetadata(folderId),
+            $fields: 'id,name,mimeType,webViewLink,parents,appProperties',
+          );
+
+    final spreadsheetId = spreadsheet.id;
+    if (spreadsheetId == null || spreadsheetId.isEmpty) {
+      throw StateError('Expense Tracker v2 Google Sheet could not be created.');
+    }
+    return GoogleDriveSetupResult(
+      folderId: folderId,
+      fileId: spreadsheetId,
+      fileName: spreadsheet.name ?? sheetsV2SpreadsheetTitle,
       webViewLink: spreadsheet.webViewLink,
     );
   }

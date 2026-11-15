@@ -142,9 +142,22 @@ typedef SheetsApiClientFactory = SheetsApiClient Function({
 /// initiates authentication or authorization, interactive mode
 /// may prompt and is only used from an explicit Settings action.
 class GoogleApisSheetsClient implements SheetsApiClient {
-  GoogleApisSheetsClient({required this.interactive});
+  GoogleApisSheetsClient({
+    required this.interactive,
+    this.spreadsheetResolver,
+    this.unformattedValues = false,
+  });
 
   final bool interactive;
+
+  /// Overrides spreadsheet resolution (the V2 client resolves the V2
+  /// identity). Null keeps the V1 resolution.
+  final Future<String> Function({required bool interactive})?
+  spreadsheetResolver;
+
+  /// Reads cells as UNFORMATTED_VALUE so numeric amounts come back as
+  /// numbers, not locale-formatted text (V2 only).
+  final bool unformattedValues;
   sheets.SheetsApi? _sheetsApi;
 
   Future<sheets.SheetsApi> _api() async {
@@ -163,6 +176,10 @@ class GoogleApisSheetsClient implements SheetsApiClient {
 
   @override
   Future<String> resolveSpreadsheetId() async {
+    final resolver = spreadsheetResolver;
+    if (resolver != null) {
+      return resolver(interactive: interactive);
+    }
     final result = await GoogleDriveService.instance.setupExpenseTracker(
       allowInteractiveAuthorization: interactive,
     );
@@ -201,7 +218,11 @@ class GoogleApisSheetsClient implements SheetsApiClient {
   ) async {
     try {
       final api = await _api();
-      final response = await api.spreadsheets.values.get(spreadsheetId, range);
+      final response = await api.spreadsheets.values.get(
+        spreadsheetId,
+        range,
+        valueRenderOption: unformattedValues ? 'UNFORMATTED_VALUE' : null,
+      );
       return response.values ?? const <List<Object?>>[];
     } catch (error) {
       if (error is SheetsNotSignedInException ||

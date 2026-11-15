@@ -171,6 +171,44 @@ class FinancialTransactionRepository {
     return reversal != null;
   }
 
+  // -----------------------------------------------------------------
+  // Sheets sync acknowledgement (local-only metadata).
+  // -----------------------------------------------------------------
+
+  /// Transactions awaiting Sheets sync, active and deleted, in
+  /// insertion order (so an original is written before its refunds
+  /// and reversals).
+  Future<List<FinancialTransaction>> getPendingSyncTransactions() {
+    return (_database.select(_database.financialTransactions)
+          ..where((t) => t.syncStatus.equals('pending'))
+          ..orderBy([(t) => OrderingTerm(expression: t.id)]))
+        .get();
+  }
+
+  /// Marks a transaction synced only if it is still exactly the
+  /// revision that was uploaded: same [syncRevision], same [status],
+  /// and still pending. A concurrent edit/delete/restore bumps the
+  /// revision, so this returns false and the newer revision stays
+  /// pending. `updatedAt` is not touched.
+  Future<bool> markSyncedIfUnchanged({
+    required int id,
+    required int syncRevision,
+    required String status,
+  }) async {
+    final updated =
+        await (_database.update(_database.financialTransactions)..where(
+              (t) =>
+                  t.id.equals(id) &
+                  t.syncRevision.equals(syncRevision) &
+                  t.status.equals(status) &
+                  t.syncStatus.equals('pending'),
+            ))
+            .write(
+              const FinancialTransactionsCompanion(syncStatus: Value('synced')),
+            );
+    return updated == 1;
+  }
+
   /// Remaining refundable amount for an expense/income transaction:
   /// original amount minus active refund amounts, zero when an
   /// active reversal exists. Recomputed from current rows on every
