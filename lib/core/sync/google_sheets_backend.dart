@@ -1,9 +1,7 @@
-import 'package:flutter/foundation.dart';
 import 'package:googleapis/sheets/v4.dart' as sheets;
 
 import '../auth/google_auth_service.dart';
-import 'google_drive_service.dart';
-import 'sheets_sync.dart';
+import 'sync_errors.dart';
 
 /// Classified Google Sheets / Drive API failures.
 ///
@@ -81,7 +79,7 @@ SheetsErrorKind classifySheetsError(
 ///   beginning with `=` is evaluated as a formula.
 ///
 /// Transaction rows and headers are always written with [raw]
-/// (see `GoogleSheetsBackend`). [userEntered] exists only so a
+/// (see `GoogleSheetsV2Backend`). [userEntered] exists only so a
 /// fake client can record which option the production client
 /// chose; production code must never write transaction values
 /// with it.
@@ -144,19 +142,20 @@ typedef SheetsApiClientFactory = SheetsApiClient Function({
 class GoogleApisSheetsClient implements SheetsApiClient {
   GoogleApisSheetsClient({
     required this.interactive,
-    this.spreadsheetResolver,
+    required this.spreadsheetResolver,
     this.unformattedValues = false,
   });
 
   final bool interactive;
 
-  /// Overrides spreadsheet resolution (the V2 client resolves the V2
-  /// identity). Null keeps the V1 resolution.
-  final Future<String> Function({required bool interactive})?
+  /// Resolves (find-or-create) the managed spreadsheet. The V2
+  /// backend passes the V2 identity resolution; there is no V1
+  /// resolution in the app any more.
+  final Future<String> Function({required bool interactive})
   spreadsheetResolver;
 
   /// Reads cells as UNFORMATTED_VALUE so numeric amounts come back as
-  /// numbers, not locale-formatted text (V2 only).
+  /// numbers, not locale-formatted text.
   final bool unformattedValues;
   sheets.SheetsApi? _sheetsApi;
 
@@ -175,15 +174,8 @@ class GoogleApisSheetsClient implements SheetsApiClient {
   }
 
   @override
-  Future<String> resolveSpreadsheetId() async {
-    final resolver = spreadsheetResolver;
-    if (resolver != null) {
-      return resolver(interactive: interactive);
-    }
-    final result = await GoogleDriveService.instance.setupExpenseTracker(
-      allowInteractiveAuthorization: interactive,
-    );
-    return result.fileId;
+  Future<String> resolveSpreadsheetId() {
+    return spreadsheetResolver(interactive: interactive);
   }
 
   @override
@@ -315,249 +307,5 @@ class GoogleApisSheetsClient implements SheetsApiClient {
       }
       throw _wrap(error, SheetsErrorKind.missingSpreadsheet);
     }
-  }
-}
-
-/// Real [SheetsSyncBackend] backed by Google Drive + Sheets APIs.
-///
-/// Spreadsheet identity is resolved through Drive on every sync
-/// run (see docs/sheets-sync.md): the Drive service finds or
-/// creates the one app-created "Expense Tracker" folder and
-/// spreadsheet, so repeated setup creates no duplicates within
-/// the app-created set and a restart re-finds the same file.
-/// Nothing here logs tokens, spreadsheet ids, or transaction
-/// data — only counts/years at debug level, with no row contents.
-///
-/// Two authorization modes exist: [instance] is in-memory-only
-/// background mode (never initiates authentication or
-/// authorization), [interactiveInstance] is for explicit
-/// Settings actions only.
-class GoogleSheetsBackend implements SheetsSyncBackend {
-  GoogleSheetsBackend._({
-    required this.interactive,
-    SheetsApiClientFactory? clientFactory,
-  }) : _clientFactory = clientFactory ?? _defaultFactory;
-
-  /// Test constructor: injects a fake client directly.
-  GoogleSheetsBackend.forTesting({
-    required SheetsApiClient client,
-    this.interactive = false,
-  }) : _clientFactory = (({required bool interactive}) => client),
-       _cachedClient = client;
-
-  /// Test constructor: injects a client factory directly, so
-  /// tests can record the authorization mode a backend requests
-  /// without a Google account.
-  GoogleSheetsBackend.withClientFactory({
-    required this.interactive,
-    required SheetsApiClientFactory clientFactory,
-  }) : _clientFactory = clientFactory;
-
-  static final GoogleSheetsBackend instance = GoogleSheetsBackend._(
-    interactive: false,
-  );
-
-  static final GoogleSheetsBackend interactiveInstance = GoogleSheetsBackend._(
-    interactive: true,
-  );
-
-  static SheetsApiClient _defaultFactory({required bool interactive}) {
-    return GoogleApisSheetsClient(interactive: interactive);
-  }
-
-  final bool interactive;
-  final SheetsApiClientFactory _clientFactory;
-  SheetsApiClient? _cachedClient;
-
-  Future<SheetsApiClient> _client() async {
-    return _cachedClient ??= _clientFactory(interactive: interactive);
-  }
-
-  static String _range(String yearTitle, String a1) => "'$yearTitle'!$a1";
-
-  @override
-  Future<String> resolveSpreadsheetId() async {
-    final client = await _client();
-    return client.resolveSpreadsheetId();
-  }
-
-  @override
-  Future<List<int>> listYearSheets(String spreadsheetId) async {
-    final client = await _client();
-    final titles = await client.sheetTitles(spreadsheetId);
-    final years = <int>[];
-    for (final title in titles) {
-      final year = int.tryParse(title);
-      if (year != null) {
-        years.add(year);
-      }
-    }
-    return years;
-  }
-
-  bool _isHeaderRow(List<Object?> row) {
-    if (row.length < 6) {
-      return false;
-    }
-    return row[0].toString() == 'Date' && row[5].toString() == 'UUID';
-  }
-
-  /// The legacy five-column header written by the previous
-  /// implementation: `Date, Type, Category, Description, Amount`
-  /// (A:E), with no UUID column. Cells beyond column E, when
-  /// present, must be empty for this to count as a legacy
-  /// header rather than a data row.
-  bool _isLegacyHeaderRow(List<Object?> row) {
-    if (row.length < 5) {
-      return false;
-    }
-    const legacy = <String>[
-      'Date',
-      'Type',
-      'Category',
-      'Description',
-      'Amount',
-    ];
-    for (var i = 0; i < 5; i++) {
-      if (row[i].toString() != legacy[i]) {
-        return false;
-      }
-    }
-    for (var i = 5; i < row.length; i++) {
-      final value = row[i];
-      if (value != null && value.toString().isNotEmpty) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  Future<void> _writeHeader(
-    SheetsApiClient client,
-    String spreadsheetId,
-    int year,
-  ) async {
-    await client.updateValues(
-      spreadsheetId,
-      _range('$year', 'A1:J1'),
-      <List<Object?>>[sheetHeaders],
-      // Headers were already written with RAW; unchanged.
-      valueInputOption: SheetsValueInputOption.raw,
-    );
-  }
-
-  @override
-  Future<void> ensureYearSheet(String spreadsheetId, int year) async {
-    final client = await _client();
-
-    final titles = await client.sheetTitles(spreadsheetId);
-    if (!titles.contains('$year')) {
-      await client.addSheet(spreadsheetId, '$year');
-      await _writeHeader(client, spreadsheetId, year);
-      return;
-    }
-
-    // Sheet exists: inspect only the header row. A legacy
-    // A:E header is extended to A:J in place; data rows are
-    // never touched and no UUID is invented for them. A
-    // current A:J header needs nothing. An empty first row
-    // means an empty sheet, so writing the header is safe. A
-    // data row in row 1 with no recognised header is left
-    // alone — overwriting it with a header would destroy
-    // data.
-    final headerValues = await client.readValues(
-      spreadsheetId,
-      _range('$year', 'A1:J1'),
-    );
-    final firstRow = headerValues.isEmpty
-        ? const <Object?>[]
-        : headerValues.first;
-    if (_isHeaderRow(firstRow)) {
-      return;
-    }
-    if (_isLegacyHeaderRow(firstRow) ||
-        firstRow.every((value) => value == null || value.toString().isEmpty)) {
-      await _writeHeader(client, spreadsheetId, year);
-    }
-  }
-
-  @override
-  Future<List<SheetRowData>> readYearSheet(
-    String spreadsheetId,
-    int year,
-  ) async {
-    final client = await _client();
-
-    // Positive identification first: if the spreadsheet itself is
-    // missing, inaccessible, or unauthorized, sheetTitles throws
-    // a classified error and it must propagate — it is never
-    // silently converted into "empty worksheet".
-    await client.sheetTitles(spreadsheetId);
-
-    late final List<List<Object?>> values;
-    try {
-      values = await client.readValues(spreadsheetId, _range('$year', 'A:J'));
-    } on SheetsApiException catch (error) {
-      // Only a verified missing worksheet/range reads as empty.
-      // Permission, authentication, network, and missing-
-      // spreadsheet errors propagate so the transaction stays
-      // pending.
-      if (error.kind == SheetsErrorKind.missingWorksheet) {
-        return const <SheetRowData>[];
-      }
-      rethrow;
-    }
-
-    final rows = <SheetRowData>[];
-    for (var i = 0; i < values.length; i++) {
-      final rowValues = values[i];
-      if (i == 0 &&
-          (_isHeaderRow(rowValues) || _isLegacyHeaderRow(rowValues))) {
-        // Current A:J header or legacy A:E header: skipped.
-        // Legacy data rows below it keep their (empty) UUID
-        // and are never matched or modified by the engine.
-        continue;
-      }
-      if (rowValues.every(
-        (value) => value == null || value.toString().isEmpty,
-      )) {
-        continue;
-      }
-      rows.add(SheetRowData.fromValues(rowValues, i + 1));
-    }
-    debugPrint('Sheets sync: read ${rows.length} rows for year $year');
-    return rows;
-  }
-
-  @override
-  Future<void> appendRow(
-    String spreadsheetId,
-    int year,
-    SheetRowData row,
-  ) async {
-    final client = await _client();
-    await client.appendValues(
-      spreadsheetId,
-      _range('$year', 'A:J'),
-      <List<Object?>>[row.toValues()],
-      valueInputOption: SheetsValueInputOption.raw,
-    );
-  }
-
-  @override
-  Future<void> updateRow(
-    String spreadsheetId,
-    int year,
-    int rowIndex,
-    SheetRowData row,
-  ) async {
-    final client = await _client();
-    await client.updateValues(
-      spreadsheetId,
-      _range('$year', 'A$rowIndex:J$rowIndex'),
-      <List<Object?>>[row.toValues()],
-      // RAW: descriptions/notes beginning with `=` stay literal.
-      valueInputOption: SheetsValueInputOption.raw,
-    );
   }
 }

@@ -1,133 +1,170 @@
-import 'package:drift/native.dart';
-import 'package:expense_tracker/data/database/app_database.dart';
-import 'package:expense_tracker/data/repositories/custom_category_repository.dart';
-import 'package:expense_tracker/data/repositories/transaction_repository.dart';
+import 'package:expense_tracker/app/app_services.dart';
+import 'package:expense_tracker/core/domain/money.dart';
 import 'package:expense_tracker/features/transactions/add_transaction_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-void main() {
-  late AppDatabase database;
-  late CustomCategoryRepository categoryRepository;
-  late TransactionRepository transactionRepository;
-  var databaseClosed = false;
+import 'app_test_helpers.dart';
 
-  setUp(() async {
-    database = AppDatabase(NativeDatabase.memory());
-    categoryRepository = CustomCategoryRepository(database);
-    transactionRepository = TransactionRepository(database);
-    databaseClosed = false;
-  });
+/// Home with a button that pushes [page], so the page's own pop on
+/// save returns here like it does in the app.
+class _Launcher extends StatelessWidget {
+  const _Launcher(this.page);
 
-  tearDown(() async {
-    if (!databaseClosed) {
-      await database.close();
-    }
-  });
+  final Widget page;
 
-  /// Closes the in-memory database inside the test body, before
-  /// teardown: an open Drift connection leaves a Timer pending
-  /// in the widget-test binding and fails teardown (see
-  /// docs/custom-categories.md).
-  Future<void> closeDatabase(WidgetTester tester) async {
-    databaseClosed = true;
-    await database.close();
-    await tester.pumpAndSettle();
-  }
-
-  Future<void> pumpPage(WidgetTester tester, {int? transactionId}) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: AddTransactionPage(
-          transactionId: transactionId,
-          transactionRepository: transactionRepository,
-          customCategoryRepository: categoryRepository,
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: ElevatedButton(
+          onPressed: () =>
+              Navigator.of(context)
+                  .push(MaterialPageRoute<void>(builder: (_) => page)),
+          child: const Text('open'),
         ),
       ),
     );
+  }
+}
+
+void main() {
+  late AppServices services;
+
+  Future<void> open(WidgetTester tester, Widget page) async {
+    await pumpWithServices(tester, services, _Launcher(page));
+    await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
   }
 
-  testWidgets('custom categories appear in the category selector', (
-    tester,
-  ) async {
-    await categoryRepository.addCategory(
-      uuid: 'cat-gym',
-      name: 'Gym',
-      iconCodePoint: Icons.fitness_center_rounded.codePoint,
-    );
-    await pumpPage(tester);
-
-    await tester.tap(find.text('Food'));
+  Future<void> save(WidgetTester tester) async {
+    await tester.tap(find.byKey(const Key('save-transaction')));
     await tester.pumpAndSettle();
+  }
 
-    expect(find.text('Gym'), findsOneWidget);
-    expect(find.byIcon(Icons.fitness_center_rounded), findsOneWidget);
+  testWidgets('asks for an account first when none exists', (tester) async {
+    services = (await tester.runAsync(createTestServices))!;
+    await open(tester, const AddTransactionPage());
 
-    await tester.tap(find.text('Gym'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Gym'), findsOneWidget);
-    await closeDatabase(tester);
+    expect(find.text('Add an account first'), findsOneWidget);
+    expect(find.byKey(const Key('save-transaction')), findsNothing);
+    await closeServices(tester, services);
   });
 
-  testWidgets(
-    'editing a transaction with a deleted custom category keeps its text',
-    (tester) async {
-      final transactionId = await transactionRepository.addTransaction(
-        TransactionsCompanion.insert(
-          uuid: 'test-txn-pilates',
-          type: 'Expense',
-          amount: 250,
-          category: 'Pilates',
-          paymentMethod: 'UPI',
-          transactionDate: DateTime(2026, 1, 15),
-          createdAt: DateTime(2026, 1, 15),
-          updatedAt: DateTime(2026, 1, 15),
-          syncStatus: 'synced',
-        ),
+  testWidgets('saves an expense in paise against the chosen account', (
+    tester,
+  ) async {
+    services = (await tester.runAsync(createTestServices))!;
+    final bank = (await tester.runAsync(
+      () => services.accounts.createAccount(name: 'HDFC', kind: 'bank'),
+    ))!;
+    await open(tester, const AddTransactionPage());
+
+    await tester.enterText(find.byKey(const Key('amount-field')), '250.50');
+    await save(tester);
+
+    expect(find.text('open'), findsOneWidget, reason: 'page closed on save');
+    final rows = (await tester.runAsync(
+      () => services.transactions.listTransactions(),
+    ))!;
+    expect(rows, hasLength(1));
+    expect(rows.single.kind, 'expense');
+    expect(rows.single.amountMinorUnits, 25050);
+    expect(rows.single.categoryId, 'food');
+    final posted = (await tester.runAsync(
+      () => services.queries.loadTransactions(accountUuid: bank.uuid),
+    ))!;
+    expect(posted.single.account?.name, 'HDFC');
+
+    await tester.pump(const Duration(seconds: 6));
+    await closeServices(tester, services);
+  });
+
+  testWidgets('more than two decimals is rejected, nothing saved', (
+    tester,
+  ) async {
+    services = (await tester.runAsync(createTestServices))!;
+    await tester.runAsync(
+      () => services.accounts.createAccount(name: 'Cash', kind: 'cash'),
+    );
+    await open(tester, const AddTransactionPage());
+
+    await tester.enterText(find.byKey(const Key('amount-field')), '10.555');
+    await save(tester);
+
+    expect(find.text('Amounts support up to 2 decimal places'), findsOneWidget);
+    final rows = (await tester.runAsync(
+      () => services.transactions.listTransactions(),
+    ))!;
+    expect(rows, isEmpty);
+    await closeServices(tester, services);
+  });
+
+  testWidgets('a transfer to a credit card is saved as a card payment', (
+    tester,
+  ) async {
+    services = (await tester.runAsync(createTestServices))!;
+    await tester.runAsync(() async {
+      await services.accounts.createAccount(
+        name: 'Bank',
+        kind: 'bank',
+        openingBalance: Money(1000000, 'INR'),
       );
-      await pumpPage(tester, transactionId: transactionId);
-
-      // The stored text is shown as the selected category, not
-      // replaced with a built-in default.
-      expect(find.text('Pilates'), findsOneWidget);
-
-      // Opening the selector keeps the stored text available.
-      await tester.tap(find.text('Pilates'));
-      await tester.pumpAndSettle();
-      expect(find.text('Pilates'), findsWidgets);
-      expect(find.text('Food'), findsOneWidget);
-      await tester.tapAt(const Offset(10, 10));
-      await tester.pumpAndSettle();
-      expect(find.text('Pilates'), findsOneWidget);
-
-      // Saving preserves the original category text.
-      await tester.enterText(find.byType(TextField).first, '250');
-      // The save button sits below the fold in the default test
-      // viewport; drag the list up until it is built and
-      // visible. (scrollUntilVisible cannot disambiguate the
-      // ListView from the TextFields' internal Scrollables.)
-      for (
-        var i = 0;
-        i < 6 && find.text('Update Transaction').evaluate().isEmpty;
-        i++
-      ) {
-        await tester.drag(find.byType(ListView), const Offset(0, -500));
-        await tester.pumpAndSettle();
-      }
-      await tester.tap(find.text('Update Transaction').first);
-      await tester.pumpAndSettle();
-
-      final saved = await transactionRepository.getTransactionById(
-        transactionId,
+      await services.accounts.createAccount(
+        name: 'Visa',
+        kind: 'credit_card_liability',
       );
-      expect(saved, isNotNull);
-      expect(saved!.category, 'Pilates');
+    });
+    await open(
+      tester,
+      const AddTransactionPage(initialType: EntryType.transfer),
+    );
 
-      await tester.pump(const Duration(seconds: 6));
-      await tester.pumpAndSettle();
-      await closeDatabase(tester);
-    },
-  );
+    expect(find.textContaining('Paying a credit card'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('amount-field')), '500');
+    await save(tester);
+
+    final rows = (await tester.runAsync(
+      () => services.transactions.listTransactions(),
+    ))!;
+    final payment = rows.singleWhere((r) => r.kind != 'opening_balance');
+    expect(payment.kind, 'card_payment');
+    expect(payment.amountMinorUnits, 50000);
+
+    await tester.pump(const Duration(seconds: 6));
+    await closeServices(tester, services);
+  });
+
+  testWidgets('editing an expense updates it in place', (tester) async {
+    services = (await tester.runAsync(createTestServices))!;
+    final expense = (await tester.runAsync(() async {
+      final bank = await services.accounts.createAccount(
+        name: 'Bank',
+        kind: 'bank',
+      );
+      return services.transactions.createExpense(
+        accountUuid: bank.uuid,
+        categoryId: 'travel',
+        amount: Money(12000, 'INR'),
+        occurredAt: DateTime.now().subtract(const Duration(days: 1)),
+        paymentChannel: 'UPI',
+        description: 'Cab',
+      );
+    }))!;
+    await open(tester, AddTransactionPage(transactionUuid: expense.uuid));
+
+    expect(find.text('Cab'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('amount-field')), '130');
+    await save(tester);
+
+    final updated = (await tester.runAsync(
+      () => services.transactions.getTransactionByUuid(expense.uuid),
+    ))!;
+    expect(updated.amountMinorUnits, 13000);
+    expect(updated.categoryId, 'travel');
+    expect(updated.syncStatus, 'pending');
+
+    await tester.pump(const Duration(seconds: 6));
+    await closeServices(tester, services);
+  });
 }

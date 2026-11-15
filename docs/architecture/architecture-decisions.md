@@ -12,7 +12,9 @@ How to use: when a decision changes, add a new ADR superseding the old one (neve
 - **v4 — 2026-11-01 (review corrections round 4):** ADR-012 restored (see its restoration note — the entry was absent from this file although listed in v1 history and in the blueprint decision table; restored from the blueprint's recorded decisions, no new decisions added); ER cardinalities corrected to the data dictionary (including optional/conditional references and the EMI XOR rule); card-payment account requirements corrected; one-active-reversal invariant and edit block while a reversal is active; refund category snapshot rule; zero-opening-balance later-entry paths; complete per-kind reversal Sheets mapping (swap/invert rules); stale review-round references corrected. ADR-003, ADR-006, ADR-007 and ADR-013 carry dated amendment notes (original text preserved).
 - **v5 — 2026-11-01 (final Module 0 corrections):** adjustment counterpart rules by reason (`opening_equity` / `adjustments` / category ledger, resolving the §6.3/§6.4 contradiction); reversal Sheets interpretation corrected (`OriginalUuid` authoritative; no balance calculation from positive amounts alone; swap/invert rules preserved); statement/document reference consistency and uniqueness with atomic classification; §16.3 commit references corrected to introducing commits. ADR-006, ADR-007 and ADR-013 carry dated amendment notes (original text preserved).
 
-## Decision status summary (after v5)
+- **v6 — 2026-11-15 (owner decisions before the continuous build of Modules 1–13):** the product owner resolved several blueprint §16.2 questions. (1) Backup/export security (ADR-011 option): **unencrypted export with an explicit warning** (option a). (2) Imported-document retention default: **30 days, then automatic deletion**. (3) Accounts worksheet: **not added** (blueprint §8.4 deferral kept). (4) Built-in category renaming: **allowed**; names stay unique case-insensitively and history references stable ids, so a rename rewrites nothing. (9) App lock: **PIN plus device biometrics** where available. Package selections (ADR-007/008/010, chart package) are delegated to the implementer, each recorded in its module PR. The remaining §16.2 items (history purge, deep links, split sync, `_meta` cell layout — implemented as key/value rows `sheetSchemaVersion`, `writerVersion` in A1:B2) are unchanged. ADR-011 carries a dated amendment note.
+
+## Decision status summary (after v6)
 
 | Status | ADRs |
 |---|---|
@@ -117,6 +119,8 @@ How to use: when a decision changes, add a new ADR superseding the old one (neve
 - **Decision:** App lock (biometric + PIN fallback) is an access gate only — UI copy and docs must say it does not encrypt the database. PINs are never stored in plaintext. Logs/crash reports must never contain financial data. Whether the database and/or backup files are encrypted, and with what key management, is unresolved and must be decided before Module 3 ships export. **Gates (new in v2, decided):** (1) backup/DB encryption is a *hard gate* before Module 3 export/restore ships — no export code ships undecided; (2) minimum sensitive-file/import protections (§11.9) are a *readiness gate* before Module 7 ships, even though app lock implementation stays in Module 12.
 - **Consequences:** Module 12 owns lock implementation; Module 3 owns the encryption decision + implementation; each earlier module implements its §14 security slice.
 - **Unresolved:** encryption option (§16.2); lock mechanism details (§16.2).
+
+**Amendment 2026-11-15 (v6, owner decision):** the backup/export encryption option is decided as **(a) unencrypted export with an explicit, user-acknowledged warning**. The Module 3 hard gate is therefore satisfied by implementing that warning; database encryption (SQLCipher) is not adopted. App lock: PIN plus device biometrics (Module 12). Original text above preserved.
 
 ## ADR-012 — Split and settle last, local-only in V1 (restored, review round 4)
 

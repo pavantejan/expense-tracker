@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 
-import '../../core/database/repository_provider.dart';
-import '../../data/database/app_database.dart';
+import '../../app/app_services.dart';
+import '../../core/domain/money.dart';
+import '../../core/domain/reporting.dart';
+import '../../core/utils/formatting.dart';
+import '../../data/database/v2/app_database_v2.dart';
+import '../common/ui.dart';
+import 'monthly_summary_page.dart';
 
 class YearlySummaryPage extends StatefulWidget {
-  const YearlySummaryPage({
-    super.key,
-    this.initialYear,
-  });
+  const YearlySummaryPage({super.key, this.initialYear});
 
   final int? initialYear;
 
@@ -16,317 +18,116 @@ class YearlySummaryPage extends StatefulWidget {
 }
 
 class _YearlySummaryPageState extends State<YearlySummaryPage> {
-  late int _selectedYear;
+  late int _year = widget.initialYear ?? DateTime.now().year;
+  AppServices? _services;
+  Stream<List<Account>>? _accounts;
+  Stream<List<ReportingPeriod>>? _reports;
 
   @override
-  void initState() {
-    super.initState();
-
-    _selectedYear = widget.initialYear ?? DateTime.now().year;
-  }
-
-  void _changeYear(int yearOffset) {
-    setState(() {
-      _selectedYear += yearOffset;
-    });
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_services == null) {
+      _services = AppScope.of(context);
+      _accounts = _services!.queries.watchAccounts();
+      _reports = _services!.queries.watchYearByMonth(_year);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final zero = Money.zero('INR');
     final theme = Theme.of(context);
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Yearly Summary'),
-      ),
-      body: StreamBuilder<List<Transaction>>(
-        stream: transactionRepository.watchAllTransactions(),
-        builder: (context, snapshot) {
-          final allTransactions = snapshot.data ?? [];
-
-          final yearStart = DateTime(_selectedYear);
-          final nextYearStart = DateTime(_selectedYear + 1);
-
-          final transactions = allTransactions
-              .where(
-                (transaction) =>
-                    !transaction.transactionDate.isBefore(yearStart) &&
-                    transaction.transactionDate.isBefore(nextYearStart),
-              )
-              .toList();
-
-          final income = transactions
-              .where((transaction) => transaction.type == 'Income')
-              .fold<double>(
-                0,
-                (total, transaction) => total + transaction.amount,
+      appBar: AppBar(title: const Text('Yearly Summary')),
+      body: StreamBuilder<List<Account>>(
+        stream: _accounts,
+        builder: (context, accountsSnapshot) {
+          final accounts = accountsSnapshot.data ?? const <Account>[];
+          return StreamBuilder<List<ReportingPeriod>>(
+            stream: _reports,
+            builder: (context, snapshot) {
+              final reports = snapshot.data;
+              final year = reports?.last;
+              final income = year?.incomeTotal ?? zero;
+              final expenses = year?.expenseTotal ?? zero;
+              final closing = balanceTotals(
+                accounts,
+                year?.closingBalances ?? const {},
               );
-
-          final expenses = transactions
-              .where((transaction) => transaction.type == 'Expense')
-              .fold<double>(
-                0,
-                (total, transaction) => total + transaction.amount,
-              );
-
-          final netChange = income - expenses;
-
-          final openingBalance = allTransactions
-              .where(
-                (transaction) =>
-                    transaction.transactionDate.isBefore(yearStart),
-              )
-              .fold<double>(
-            0,
-            (balance, transaction) {
-              if (transaction.type == 'Income') {
-                return balance + transaction.amount;
-              }
-
-              return balance - transaction.amount;
-            },
-          );
-
-          final closingBalance = openingBalance + netChange;
-
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              return ListView(
+                padding: const EdgeInsets.all(16),
                 children: [
-                  IconButton(
-                    onPressed: () => _changeYear(-1),
-                    icon: const Icon(
-                      Icons.chevron_left_rounded,
-                    ),
-                    tooltip: 'Previous year',
+                  YearSelector(
+                    year: _year,
+                    onChanged: (y) => setState(() {
+                      _year = y;
+                      _reports = _services!.queries.watchYearByMonth(y);
+                    }),
                   ),
+                  const SizedBox(height: 20),
+                  AmountTile(
+                    title: 'Income',
+                    amount: income,
+                    icon: Icons.arrow_downward_rounded,
+                  ),
+                  AmountTile(
+                    title: 'Expenses',
+                    amount: expenses,
+                    icon: Icons.arrow_upward_rounded,
+                  ),
+                  AmountTile(
+                    title: 'Net (income − expenses)',
+                    amount: income - expenses,
+                    icon: Icons.swap_vert_rounded,
+                  ),
+                  AmountTile(
+                    title: 'Closing balance',
+                    subtitle: 'Bank, cash and wallets at year end',
+                    amount: closing.assets,
+                    icon: Icons.account_balance_rounded,
+                  ),
+                  const SizedBox(height: 20),
                   Text(
-                    '$_selectedYear',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => _changeYear(1),
-                    icon: const Icon(
-                      Icons.chevron_right_rounded,
-                    ),
-                    tooltip: 'Next year',
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              _SummaryCard(
-                title: 'Opening Balance',
-                amount: _formatAmount(openingBalance),
-                icon: Icons.account_balance_wallet_outlined,
-              ),
-              const SizedBox(height: 12),
-              _SummaryCard(
-                title: 'Income',
-                amount: _formatAmount(income),
-                icon: Icons.arrow_downward_rounded,
-              ),
-              const SizedBox(height: 12),
-              _SummaryCard(
-                title: 'Expenses',
-                amount: _formatAmount(expenses),
-                icon: Icons.arrow_upward_rounded,
-              ),
-              const SizedBox(height: 12),
-              _SummaryCard(
-                title: 'Net Change',
-                amount: _formatAmount(netChange),
-                icon: Icons.swap_vert_rounded,
-              ),
-              const SizedBox(height: 12),
-              _SummaryCard(
-                title: 'Closing Balance',
-                amount: _formatAmount(closingBalance),
-                icon: Icons.account_balance_rounded,
-              ),
-              const SizedBox(height: 20),
-              Card(
-                child: ListTile(
-                  leading: const CircleAvatar(
-                    child: Icon(
-                      Icons.receipt_long_rounded,
-                    ),
-                  ),
-                  title: const Text(
-                    'Transactions',
-                  ),
-                  subtitle: Text(
-                    'Total transactions in $_selectedYear',
-                  ),
-                  trailing: Text(
-                    '${transactions.length}',
+                    'Monthly Breakdown',
                     style: theme.textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'Monthly Breakdown',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              ..._buildMonthlyBreakdown(
-                context,
-                allTransactions,
-              ),
-            ],
+                  const SizedBox(height: 8),
+                  if (reports == null)
+                    const Center(child: CircularProgressIndicator())
+                  else
+                    for (var i = 0; i < 12; i++)
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          title: Text(
+                            monthNames[i],
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            'Income ${reports[i].incomeTotal.format()} • '
+                            'Expenses ${reports[i].expenseTotal.format()}',
+                          ),
+                          trailing: Text(
+                            (reports[i].incomeTotal - reports[i].expenseTotal)
+                                .format(),
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => MonthlySummaryPage(
+                                initialMonth: DateTime(_year, i + 1),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                ],
+              );
+            },
           );
         },
-      ),
-    );
-  }
-
-  List<Widget> _buildMonthlyBreakdown(
-    BuildContext context,
-    List<Transaction> allTransactions,
-  ) {
-    const monthNames = [
-      'January',
-      'February',
-      'March',
-      'April',
-      'May',
-      'June',
-      'July',
-      'August',
-      'September',
-      'October',
-      'November',
-      'December',
-    ];
-
-    return List.generate(12, (index) {
-      final month = index + 1;
-
-      final monthStart = DateTime(
-        _selectedYear,
-        month,
-      );
-
-      final nextMonthStart = DateTime(
-        _selectedYear,
-        month + 1,
-      );
-
-      final monthTransactions = allTransactions.where(
-        (transaction) =>
-            !transaction.transactionDate.isBefore(monthStart) &&
-            transaction.transactionDate.isBefore(nextMonthStart),
-      );
-
-      final income = monthTransactions
-          .where((transaction) => transaction.type == 'Income')
-          .fold<double>(
-            0,
-            (total, transaction) => total + transaction.amount,
-          );
-
-      final expenses = monthTransactions
-          .where((transaction) => transaction.type == 'Expense')
-          .fold<double>(
-            0,
-            (total, transaction) => total + transaction.amount,
-          );
-
-      final netChange = income - expenses;
-
-      final openingBalance = allTransactions
-          .where(
-            (transaction) =>
-                transaction.transactionDate.isBefore(monthStart),
-          )
-          .fold<double>(
-        0,
-        (balance, transaction) {
-          if (transaction.type == 'Income') {
-            return balance + transaction.amount;
-          }
-
-          return balance - transaction.amount;
-        },
-      );
-
-      final closingBalance = openingBalance + netChange;
-
-      return Card(
-        margin: const EdgeInsets.only(bottom: 8),
-        child: ListTile(
-          title: Text(
-            monthNames[index],
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          subtitle: Text(
-            'Opening: ${_formatAmount(openingBalance)}\n'
-            'Income: ${_formatAmount(income)}\n'
-            'Expenses: ${_formatAmount(expenses)}\n'
-            'Closing: ${_formatAmount(closingBalance)}',
-          ),
-          isThreeLine: false,
-          trailing: Text(
-            _formatAmount(netChange),
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: netChange >= 0
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).colorScheme.error,
-            ),
-          ),
-        ),
-      );
-    });
-  }
-
-  String _formatAmount(double amount) {
-    return '₹${amount.toStringAsFixed(2)}';
-  }
-}
-
-class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({
-    required this.title,
-    required this.amount,
-    required this.icon,
-  });
-
-  final String title;
-  final String amount;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 20,
-          vertical: 8,
-        ),
-        leading: CircleAvatar(
-          child: Icon(icon),
-        ),
-        title: Text(title),
-        subtitle: const Text(
-          'For selected year',
-        ),
-        trailing: Text(
-          amount,
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-        ),
       ),
     );
   }

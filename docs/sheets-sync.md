@@ -1,5 +1,41 @@
 # Google Sheets sync — working notes
 
+> **Module 1 cutover (2026-11-15) — read this first.** The app now
+> syncs to a separate **"Expense Tracker v2"** spreadsheet (blueprint
+> §8.2, ADR-015). Everything below describes the V1 engine and is kept
+> as history; the V1 engine, the V1 `GoogleSheetsBackend`, and the V1
+> spreadsheet resolution were removed from the code.
+>
+> What carried over unchanged: UUID-only row identity and upsert,
+> tombstones instead of deletes, deleted-before-first-sync writes
+> nothing, year moves tombstone first, all-or-nothing worksheet
+> discovery, duplicate rows reported and never merged, RAW writes,
+> conditional acknowledgement on a local-only `syncRevision`, and the
+> coordinator's single-run/drain/bounded-retry/one-notification rules.
+>
+> What is new in V2 (`lib/core/sync/v2/`):
+>
+> - **Identity.** Resolved per run by a Drive query for an app-created
+>   spreadsheet carrying `appProperties.expenseTrackerSchemaVersion = 2`
+>   (title `Expense Tracker v2`). A `_meta` worksheet must record
+>   `sheetSchemaVersion = 2`; it is created only on a spreadsheet with
+>   no year data. A spreadsheet with data but no `_meta`, or another
+>   version, is refused before any write. The V1 spreadsheet is never
+>   opened for writing and stays in Drive as an archive.
+> - **Columns A:Y.** A:J keep the V1 headers; K:Y are `Kind,
+>   CategoryId, AccountId, Account, FromAccountId, FromAccount,
+>   ToAccountId, ToAccount, CardId, Merchant, Tags, OriginalUuid,
+>   RelatedUuid, Source, BalanceDirection`. `Type`/`Kind` use the eight
+>   kinds (`Expense, Income, Transfer, CardPayment, Refund, Adjustment,
+>   OpeningBalance, Reversal`). Reversal rows follow the blueprint §8.3
+>   swap/invert table.
+> - **Amounts.** Integer paise are converted to a numeric cell through
+>   decimal-string arithmetic (no `double` division) and read back with
+>   UNFORMATTED_VALUE. Amounts above `7036874417766399` paise are never
+>   written: the row stays pending and the user gets one notification.
+> - Merchant, Tags and CardId are empty until Modules 2 and 6. There is
+>   no Accounts worksheet (blueprint §8.4).
+
 Branch: `feature/fix-google-sheets-sync`, base `master` (2231948, 31 Oct 2026).
 Environment note (corrected 31 Oct 2026): a Flutter/Dart
 toolchain DOES exist in this environment after all — Flutter

@@ -78,49 +78,11 @@ class GoogleDriveService {
 
   static const String _folderName = 'Expense Tracker';
 
-  static const String _spreadsheetName = 'Expense Tracker';
-
-  static const String _spreadsheetMimeType =
-      'application/vnd.google-apps.spreadsheet';
-
   Future<drive.DriveApi> _getDriveApi({
     required bool allowInteractiveAuthorization,
   }) {
     return GoogleAuthService.instance.getDriveApi(
       allowInteractiveAuthorization: allowInteractiveAuthorization,
-    );
-  }
-
-  Future<GoogleDriveSetupResult> setupExpenseTracker({
-    bool allowInteractiveAuthorization = false,
-  }) async {
-    final api = await _getDriveApi(
-      allowInteractiveAuthorization: allowInteractiveAuthorization,
-    );
-
-    final folder = await _findOrCreateExpenseTrackerFolder(api);
-
-    final folderId = folder.id;
-
-    if (folderId == null || folderId.isEmpty) {
-      throw StateError('Expense Tracker folder could not be created.');
-    }
-
-    final spreadsheet =
-        await _findSpreadsheet(api, folderId) ??
-        await _createSpreadsheet(api, folderId);
-
-    final spreadsheetId = spreadsheet.id;
-
-    if (spreadsheetId == null || spreadsheetId.isEmpty) {
-      throw StateError('Expense Tracker Google Sheet could not be created.');
-    }
-
-    return GoogleDriveSetupResult(
-      folderId: folderId,
-      fileId: spreadsheetId,
-      fileName: spreadsheet.name ?? _spreadsheetName,
-      webViewLink: spreadsheet.webViewLink,
     );
   }
 
@@ -197,47 +159,5 @@ class GoogleDriveService {
       ..mimeType = 'application/vnd.google-apps.folder';
 
     return api.files.create(metadata, $fields: 'id,name,mimeType,webViewLink');
-  }
-
-  Future<drive.File?> _findSpreadsheet(
-    drive.DriveApi api,
-    String folderId,
-  ) async {
-    final result = await api.files.list(
-      q:
-          "'$folderId' in parents "
-          "and name = '$_spreadsheetName' "
-          "and mimeType = '$_spreadsheetMimeType' "
-          "and trashed = false",
-      spaces: 'drive',
-      $fields: 'files(id,name,mimeType,webViewLink,parents)',
-      pageSize: 10,
-    );
-
-    final files = result.files;
-
-    if (files == null || files.isEmpty) {
-      return null;
-    }
-
-    // Ambiguous duplicates among app-created spreadsheets in this
-    // folder: reuse the first and create no new spreadsheet.
-    // Manual reconciliation is documented in docs/sheets-sync.md.
-    return files.first;
-  }
-
-  Future<drive.File> _createSpreadsheet(
-    drive.DriveApi api,
-    String folderId,
-  ) async {
-    final metadata = drive.File()
-      ..name = _spreadsheetName
-      ..mimeType = _spreadsheetMimeType
-      ..parents = <String>[folderId];
-
-    return api.files.create(
-      metadata,
-      $fields: 'id,name,mimeType,webViewLink,parents',
-    );
   }
 }

@@ -1,13 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
-import '../../core/categories/category.dart';
-import '../../core/database/repository_provider.dart';
-import '../../core/notifications/notification_manager.dart';
-import '../../core/sync/sync_coordinator.dart';
-import '../../data/database/app_database.dart';
-import '../../data/notifications/notification.dart';
+import '../../app/app_services.dart';
+import '../../data/repositories/ledger_query_service.dart';
+import '../common/ui.dart';
 import 'add_transaction_page.dart';
 
 class AllTransactionsPage extends StatefulWidget {
@@ -22,21 +17,28 @@ class AllTransactionsPage extends StatefulWidget {
 class _AllTransactionsPageState extends State<AllTransactionsPage> {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
-
-  String _searchQuery = '';
+  String _query = '';
+  AppServices? _services;
+  Stream<List<TransactionView>>? _transactions;
 
   @override
   void initState() {
     super.initState();
-
     if (widget.autoFocusSearch) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) {
-          return;
+        if (mounted) {
+          _searchFocusNode.requestFocus();
         }
-
-        _searchFocusNode.requestFocus();
       });
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_services == null) {
+      _services = AppScope.of(context);
+      _transactions = _services!.queries.watchTransactions();
     }
   }
 
@@ -47,322 +49,127 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
     super.dispose();
   }
 
-  Future<bool> _confirmDelete(Transaction transaction) async {
+  Future<bool> _confirmDelete(TransactionView view) async {
     return await showDialog<bool>(
           context: context,
-          builder: (dialogContext) {
-            final title = transaction.description?.isNotEmpty == true
-                ? transaction.description!
-                : transaction.category;
-
-            return AlertDialog(
-              title: const Text('Delete transaction?'),
-              content: Text(
-                'Are you sure you want to delete '
-                '$title for ₹${transaction.amount.toStringAsFixed(2)}?',
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Delete transaction?'),
+            content: Text(
+              'Delete "${transactionTitle(view)}"? It is removed from '
+              'balances and reports. You can undo right after deleting.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(dialogContext).pop(false);
-                  },
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    Navigator.of(dialogContext).pop(true);
-                  },
-                  child: const Text('Delete'),
-                ),
-              ],
-            );
-          },
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Delete'),
+              ),
+            ],
+          ),
         ) ??
         false;
-  }
-
-  Future<void> _deleteTransaction(Transaction transaction) async {
-    final deleted = await transactionRepository.deleteTransaction(
-      transaction.id,
-    );
-
-    if (!deleted || !mounted) {
-      return;
-    }
-
-    final title = transaction.description?.isNotEmpty == true
-        ? transaction.description!
-        : transaction.category;
-
-    NotificationManager.instance.add(
-      type: NotificationType.transactionDeleted,
-      title: 'Transaction deleted',
-      message: '$title • ₹${transaction.amount.toStringAsFixed(2)}',
-    );
-
-    unawaited(sheetsSyncCoordinator.requestSync());
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('Transaction deleted'),
-        // A SnackBar with an action defaults to persist: true, which
-        // kept the Undo bar on screen until tapped. Explicitly
-        // auto-dismiss after 5 seconds; Undo still works within
-        // that window.
-        duration: const Duration(seconds: 5),
-        persist: false,
-        action: SnackBarAction(
-          label: 'UNDO',
-          onPressed: () async {
-            final restored = await transactionRepository.restoreTransaction(
-              transaction.id,
-            );
-
-            if (!restored || !mounted) {
-              return;
-            }
-
-            NotificationManager.instance.add(
-              type: NotificationType.transactionRestored,
-              title: 'Transaction restored',
-              message: '$title • ₹${transaction.amount.toStringAsFixed(2)}',
-            );
-
-            unawaited(sheetsSyncCoordinator.requestSync());
-
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Transaction restored'),
-                duration: Duration(seconds: 5),
-                persist: false,
-              ),
-            );
-          },
-        ),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: true,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            ScaffoldMessenger.of(context).clearSnackBars();
-            Navigator.of(context).pop();
-          },
-        ),
-        title: const Text(
-          'All Transactions',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: TextField(
-                controller: _searchController,
-                focusNode: _searchFocusNode,
-                onChanged: (value) {
-                  setState(() {
-                    _searchQuery = value.trim();
-                  });
-                },
-                decoration: InputDecoration(
-                  hintText: 'Search transactions',
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  suffixIcon: _searchQuery.isEmpty
-                      ? null
-                      : IconButton(
-                          onPressed: () {
-                            _searchController.clear();
-
-                            setState(() {
-                              _searchQuery = '';
-                            });
-                          },
-                          icon: const Icon(Icons.clear_rounded),
-                          tooltip: 'Clear search',
-                        ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: StreamBuilder<List<Transaction>>(
-                stream: _searchQuery.isEmpty
-                    ? transactionRepository.watchAllTransactions()
-                    : transactionRepository.searchTransactions(_searchQuery),
-                builder: (context, snapshot) {
-                  final transactions = snapshot.data ?? [];
-
-                  if (transactions.isEmpty) {
-                    return _EmptyTransactionsView(
-                      isSearching: _searchQuery.isNotEmpty,
-                    );
-                  }
-
-                  return ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    itemCount: transactions.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      final transaction = transactions[index];
-
-                      return Dismissible(
-                        key: ValueKey(transaction.id),
-                        direction: DismissDirection.endToStart,
-                        background: Container(
-                          alignment: Alignment.centerRight,
-                          padding: const EdgeInsets.only(right: 24),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.errorContainer,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Icon(
-                            Icons.delete_rounded,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onErrorContainer,
-                          ),
-                        ),
-                        confirmDismiss: (_) => _confirmDelete(transaction),
-                        onDismissed: (_) {
-                          _deleteTransaction(transaction);
+      appBar: AppBar(title: const Text('All Transactions')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: TextField(
+              key: const Key('search-field'),
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              decoration: InputDecoration(
+                hintText: 'Search description, category, account, notes',
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear search',
+                        icon: const Icon(Icons.clear_rounded),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _query = '');
                         },
-                        child: _AllTransactionCard(
-                          transaction: transaction,
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => AddTransactionPage(
-                                  transactionId: transaction.id,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      );
-                    },
+                      ),
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (value) =>
+                  setState(() => _query = value.trim().toLowerCase()),
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<List<TransactionView>>(
+              stream: _transactions,
+              builder: (context, snapshot) {
+                final all = snapshot.data;
+                if (all == null) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final visible = _query.isEmpty
+                    ? all
+                    : all.where((v) => v.searchText.contains(_query)).toList();
+                if (visible.isEmpty) {
+                  return ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      EmptyStateCard(
+                        icon: Icons.receipt_long_outlined,
+                        title: _query.isEmpty
+                            ? 'No transactions yet'
+                            : 'No matches',
+                        message: _query.isEmpty
+                            ? 'Transactions you add appear here.'
+                            : 'No transactions match "$_query".',
+                      ),
+                    ],
                   );
-                },
-              ),
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  itemCount: visible.length,
+                  itemBuilder: (context, index) {
+                    final view = visible[index];
+                    return Dismissible(
+                      key: ValueKey(view.uuid),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 24),
+                        color: Theme.of(context).colorScheme.errorContainer,
+                        child: const Icon(Icons.delete_outline_rounded),
+                      ),
+                      // Delete inside confirmDismiss so a rejected delete
+                      // (e.g. refunds still reference it) never leaves a
+                      // dismissed tile in the tree.
+                      confirmDismiss: (_) async {
+                        if (!await _confirmDelete(view) || !context.mounted) {
+                          return false;
+                        }
+                        return deleteWithUndo(context, _services!, view.uuid);
+                      },
+                      child: TransactionTile(
+                        view: view,
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) =>
+                                AddTransactionPage(transactionUuid: view.uuid),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AllTransactionCard extends StatelessWidget {
-  const _AllTransactionCard({required this.transaction, required this.onTap});
-
-  final Transaction transaction;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isIncome = transaction.type == 'Income';
-
-    final title = transaction.description?.isNotEmpty == true
-        ? transaction.description!
-        : transaction.category;
-
-    final date =
-        '${transaction.transactionDate.day.toString().padLeft(2, '0')}/'
-        '${transaction.transactionDate.month.toString().padLeft(2, '0')}/'
-        '${transaction.transactionDate.year}';
-
-    return Card(
-      child: ListTile(
-        onTap: onTap,
-        leading: CircleAvatar(
-          child: Icon(
-            isIncome
-                ? Icons.arrow_downward_rounded
-                : _categoryIcon(transaction.category),
           ),
-        ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(
-          '${transaction.category} • '
-          '${transaction.paymentMethod}\n'
-          '$date',
-        ),
-        isThreeLine: true,
-        trailing: Text(
-          '${isIncome ? '+' : '-'}'
-          '₹${transaction.amount.toStringAsFixed(2)}',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: isIncome
-                ? theme.colorScheme.primary
-                : theme.colorScheme.error,
-          ),
-        ),
-      ),
-    );
-  }
-
-  IconData _categoryIcon(String categoryName) {
-    for (final category in expenseCategories) {
-      if (category.name == categoryName) {
-        return category.icon;
-      }
-    }
-
-    return Icons.more_horiz_rounded;
-  }
-}
-
-class _EmptyTransactionsView extends StatelessWidget {
-  const _EmptyTransactionsView({required this.isSearching});
-
-  final bool isSearching;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              isSearching
-                  ? Icons.search_off_rounded
-                  : Icons.receipt_long_outlined,
-              size: 64,
-              color: theme.colorScheme.primary,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              isSearching ? 'No transactions found' : 'No transactions yet',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              isSearching
-                  ? 'Try a different search term.'
-                  : 'Your expenses and income will appear here.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium,
-            ),
-          ],
-        ),
+        ],
       ),
     );
   }

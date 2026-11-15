@@ -1,7 +1,7 @@
 // V2 Google Sheets sync engine (blueprint sections 8.1-8.3).
 //
-// Pure Dart. Same rules as the V1 engine (`sheets_sync.dart`), applied
-// to A:Y rows of the distinct V2 spreadsheet:
+// Pure Dart. The rules carried over from the V1 engine, applied to A:Y
+// rows of the distinct V2 spreadsheet:
 // - UUID is the only row identity; upsert in place, never duplicate.
 // - Soft-deleted transactions keep their row with Deleted=TRUE; a
 //   transaction deleted before its first sync writes nothing.
@@ -14,8 +14,7 @@
 // whose amount exceeds the numeric-cell limit or whose data cannot be
 // mapped stays pending and is reported.
 
-import '../sheets_sync.dart'
-    show SheetsAuthorizationMissingException, SheetsNotSignedInException;
+import '../sync_errors.dart';
 import 'sheets_v2_contract.dart';
 import 'sheets_v2_mapper.dart';
 

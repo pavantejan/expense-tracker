@@ -2,8 +2,10 @@
 //
 // V2-only. Creating a custom category creates its ledger accounts
 // in the same database transaction (one per applicable side for its
-// kind). Renaming a built-in category is rejected: built-in renaming
-// is unresolved (blueprint section 16.2). Kind changes are rejected
+// kind). Any category, built-in or custom, may be renamed (user
+// decision 2026-11-15, resolving blueprint section 16.2 question 4):
+// history references the stable id, so a rename rewrites nothing.
+// Names are unique case-insensitively. Kind changes are rejected
 // once any posting references the category's ledgers, including
 // postings of soft-deleted transactions (C2); at zero postings the
 // ledger set is adjusted (missing sides created, removed sides
@@ -46,13 +48,14 @@ class CategoryRepository {
       throw PostingValidationException('Unknown category kind: $kind.');
     }
     return _database.transaction(() async {
+      await _requireUniqueName(name);
       final categoryId = 'custom_${_newUuid()}';
       await _database
           .into(_database.categories)
           .insert(
             CategoriesCompanion.insert(
               categoryId: categoryId,
-              name: name,
+              name: name.trim(),
               iconCodePoint: iconCodePoint,
               colorValue: Value(colorValue),
               kind: kind,
@@ -111,9 +114,8 @@ class CategoryRepository {
     )..where((t) => t.ledgerAccountId.equals(ledgerId))).getSingleOrNull();
   }
 
-  /// Presentation edits. Name changes are custom-only (built-in
-  /// renaming is unresolved); icon, colour, and display order may
-  /// change for any category.
+  /// Presentation edits: name, icon, colour, and display order, for
+  /// built-in and custom categories alike. The name must stay unique.
   Future<Category> updateCategoryPresentation(
     String categoryId, {
     String? name,
@@ -131,17 +133,13 @@ class CategoryRepository {
           'Category name must not be empty.',
         );
       }
-      if (existing.origin == 'builtin') {
-        throw const PostingValidationException(
-          'Built-in category renaming is unresolved and not allowed.',
-        );
-      }
+      await _requireUniqueName(name, exceptCategoryId: categoryId);
     }
     await (_database.update(
       _database.categories,
     )..where((t) => t.categoryId.equals(categoryId))).write(
       CategoriesCompanion(
-        name: name == null ? const Value.absent() : Value(name),
+        name: name == null ? const Value.absent() : Value(name.trim()),
         iconCodePoint: iconCodePoint == null
             ? const Value.absent()
             : Value(iconCodePoint),
@@ -283,6 +281,24 @@ class CategoryRepository {
       await (_database.update(_database.ledgerAccounts)
             ..where((t) => t.ledgerAccountId.equals(ledger.ledgerAccountId)))
           .write(LedgerAccountsCompanion(isArchived: Value(archived)));
+    }
+  }
+
+  Future<void> _requireUniqueName(
+    String name, {
+    String? exceptCategoryId,
+  }) async {
+    final lowered = name.trim().toLowerCase();
+    final all = await _database.select(_database.categories).get();
+    final clash = all.any(
+      (c) =>
+          c.categoryId != exceptCategoryId &&
+          c.name.trim().toLowerCase() == lowered,
+    );
+    if (clash) {
+      throw const PostingValidationException(
+        'A category with this name already exists.',
+      );
     }
   }
 

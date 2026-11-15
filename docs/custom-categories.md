@@ -1,5 +1,16 @@
 # Custom category management
 
+> **Module 1 cutover (2026-11-15).** Categories now live in the V2
+> database with stable ids (`food`, `custom_<uuid>`, ...). Transactions
+> reference the id, never the name, so the rename-propagation machinery
+> described below is gone along with `CustomCategoryRepository`. Current
+> rules (`CategoryRepository`): any category, **including the eight
+> built-ins**, can be renamed (user decision 2026-11-15); names are
+> unique case-insensitively; each category is `expense`, `income` or
+> `both`, and its kind can change only before any transaction uses it;
+> categories are archived (hidden from new transactions, history kept)
+> rather than deleted. The text below is the V1 history.
+
 ## What this module adds
 
 - `CustomCategoryRepository.updateCategory()` delegates to

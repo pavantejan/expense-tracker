@@ -40,6 +40,17 @@ IconData categoryIconData(int codePoint) {
   );
 }
 
+/// Icon for any category row: a built-in keeps its own icon until the
+/// user picks another; everything else uses the stored picker icon.
+IconData iconForCategory(String categoryId, int codePoint) {
+  for (final builtIn in expenseCategories) {
+    if (builtIn.id == categoryId && builtIn.icon.codePoint == codePoint) {
+      return builtIn.icon;
+    }
+  }
+  return categoryIconData(codePoint);
+}
+
 class ExpenseCategory {
   const ExpenseCategory({
     required this.id,

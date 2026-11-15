@@ -2,9 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/app_services.dart';
 import '../../core/auth/google_auth_service.dart';
-import '../../core/sync/google_sheets_backend.dart';
-import '../../core/sync/sync_coordinator.dart';
+import '../../core/sync/v2/google_sheets_v2_backend.dart';
+import '../accounts/accounts_page.dart';
 import '../categories/categories_page.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -94,7 +95,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Google Sheets backup authorized.')),
       );
-      unawaited(sheetsSyncCoordinator.syncNow());
+      unawaited(AppScope.of(context).sync.syncNow());
     } catch (_) {
       if (!mounted) {
         return;
@@ -160,7 +161,7 @@ class _SettingsPageState extends State<SettingsPage> {
       // This is silent: if Sheets authorization is missing, no
       // consent prompt appears here — the authorize button in
       // the Sync section below is the explicit action.
-      unawaited(sheetsSyncCoordinator.requestSync());
+      unawaited(AppScope.of(context).sync.requestSync());
     } catch (error) {
       if (!mounted) {
         return;
@@ -219,13 +220,14 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   // ============================================================
-  // GOOGLE SHEETS — ONE MASTER SPREADSHEET
+  // GOOGLE SHEETS — THE V2 SPREADSHEET
   //
-  // Resolves (or creates, only if missing) the single
-  // "Expense Tracker" folder + spreadsheet, and ensures the
-  // current-year worksheet exists. It never creates a second
-  // spreadsheet, never deletes anything, and never touches
-  // local transactions.
+  // Resolves (or creates, only if missing) the "Expense Tracker v2"
+  // spreadsheet in the app's Drive folder, verifies its _meta
+  // schema version, and ensures the current-year worksheet exists.
+  // The old "Expense Tracker" (V1) spreadsheet is never written; it
+  // stays in Drive as an archive. Nothing is deleted and local
+  // transactions are never touched.
   // ============================================================
 
   Future<void> _createGoogleSheet() async {
@@ -242,12 +244,10 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      final spreadsheetId = await GoogleSheetsBackend.interactiveInstance
-          .resolveSpreadsheetId();
-      await GoogleSheetsBackend.interactiveInstance.ensureYearSheet(
-        spreadsheetId,
-        DateTime.now().year,
-      );
+      final backend = GoogleSheetsV2Backend.interactiveInstance;
+      final spreadsheetId = await backend.resolveSpreadsheetId();
+      await backend.verifyV2Identity(spreadsheetId);
+      await backend.ensureYearSheet(spreadsheetId, DateTime.now().year);
 
       if (!mounted) {
         return;
@@ -255,7 +255,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Expense Tracker Google Sheet is ready for backup.'),
+          content: Text('Expense Tracker v2 Google Sheet is ready for backup.'),
         ),
       );
     } catch (error) {
@@ -288,7 +288,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     try {
-      await sheetsSyncCoordinator.syncNow();
+      await AppScope.of(context).sync.syncNow();
     } finally {
       if (mounted) {
         setState(() {
@@ -458,12 +458,14 @@ class _SettingsPageState extends State<SettingsPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Expense Tracker Sheet',
+                              'Expense Tracker v2 Sheet',
                               style: TextStyle(fontWeight: FontWeight.w600),
                             ),
                             SizedBox(height: 4),
                             Text(
-                              'Create your Google Sheet for automatic backup.',
+                              'Backups go to a new "Expense Tracker v2" '
+                              'spreadsheet. Your old "Expense Tracker" '
+                              'sheet is kept unchanged as an archive.',
                             ),
                           ],
                         ),
@@ -488,8 +490,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           : const Icon(Icons.add_chart_rounded),
                       label: Text(
                         _isDriveSettingUp
-                            ? 'Creating Sheet...'
-                            : 'Create Expense Tracker Sheet',
+                            ? 'Setting up Sheet...'
+                            : 'Set up Expense Tracker v2 Sheet',
                       ),
                     ),
                   ),
@@ -579,12 +581,12 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
 
           // ======================================================
-          // CATEGORIES
+          // ACCOUNTS AND CATEGORIES
           // ======================================================
           const SizedBox(height: 24),
 
           Text(
-            'Categories',
+            'Accounts and categories',
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.w600,
             ),
@@ -594,13 +596,36 @@ class _SettingsPageState extends State<SettingsPage> {
 
           Card(
             child: ListTile(
-              leading: const CircleAvatar(child: Icon(Icons.category_rounded)),
+              leading: const CircleAvatar(
+                child: Icon(Icons.account_balance_rounded),
+              ),
               title: const Text(
-                'Custom categories',
+                'Accounts',
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
               subtitle: const Text(
-                'Add, edit, and delete your own expense categories.',
+                'Bank accounts, cash, wallets and credit cards.',
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const AccountsPage()));
+              },
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          Card(
+            child: ListTile(
+              leading: const CircleAvatar(child: Icon(Icons.category_rounded)),
+              title: const Text(
+                'Categories',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'Add, rename, and archive expense and income categories.',
               ),
               trailing: const Icon(Icons.chevron_right_rounded),
               onTap: () {
@@ -634,7 +659,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 'Expense Tracker',
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
-              subtitle: const Text('Personal expense and income tracker'),
+              subtitle: const Text(
+                'Personal finance tracker. Data is stored on this device '
+                'and backed up to your Google Sheet.',
+              ),
             ),
           ),
         ],

@@ -1,66 +1,67 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:uuid/uuid.dart';
 
+import '../../app/app_services.dart';
 import '../../core/categories/category.dart';
-import '../../core/database/repository_provider.dart';
-import '../../core/sync/sync_coordinator.dart';
-import '../../data/database/app_database.dart';
-import '../../data/repositories/custom_category_repository.dart';
+import '../../data/database/v2/app_database_v2.dart';
+import '../common/ui.dart';
+
+const Map<String, String> categoryKindLabels = <String, String>{
+  'expense': 'Expenses only',
+  'income': 'Income only',
+  'both': 'Expenses and income',
+};
 
 /// Validates a category name entered in the add/edit form.
 ///
-/// Returns an error message, or `null` when the name is usable.
-/// [existingNames] are the other custom category names (the
-/// edited category's own name excluded by the caller); the
-/// check is case-insensitive and ignores surrounding
-/// whitespace. Names colliding with a built-in category are
-/// rejected with their own message.
+/// [existingNames] are the other categories' names (the edited
+/// category's own name excluded by the caller), built-in and custom;
+/// the check is case-insensitive and ignores surrounding whitespace.
 String? validateCategoryName(String? value, Iterable<String> existingNames) {
   final trimmed = value?.trim() ?? '';
   if (trimmed.isEmpty) {
     return 'Enter a category name.';
   }
   final lowered = trimmed.toLowerCase();
-  if (expenseCategories.any(
-    (category) => category.name.toLowerCase() == lowered,
-  )) {
-    return '"$trimmed" is already a built-in category.';
-  }
   if (existingNames.any((name) => name.trim().toLowerCase() == lowered)) {
     return 'A category with this name already exists.';
   }
   return null;
 }
 
-/// Result of the add/edit category dialog: the trimmed name
-/// and the selected icon's code point.
+/// Result of the add/edit category dialog.
 class CategoryFormResult {
-  const CategoryFormResult({required this.name, required this.iconCodePoint});
+  const CategoryFormResult({
+    required this.name,
+    required this.iconCodePoint,
+    required this.kind,
+  });
 
   final String name;
   final int iconCodePoint;
+  final String kind;
 }
 
-/// Add/edit form for one custom category.
-///
-/// Shown as a dialog by [CategoriesPage]. Validation follows
-/// Flutter's standard form pattern (`Form` + `TextFormField`
-/// validator); the dialog only returns a result when the form
-/// is valid. It never touches the database itself, so it can
-/// be widget-tested without one.
+/// Add/edit form for one category. Never touches the database, so it
+/// can be widget-tested without one.
 class CategoryFormDialog extends StatefulWidget {
   const CategoryFormDialog({
     super.key,
     this.initialName,
     this.initialIconCodePoint,
+    this.initialKind = 'expense',
+    this.categoryId,
     required this.existingNames,
     required this.isEditing,
   });
 
   final String? initialName;
   final int? initialIconCodePoint;
+  final String initialKind;
+
+  /// The edited category's id, so a built-in keeps its own icon.
+  final String? categoryId;
   final Iterable<String> existingNames;
   final bool isEditing;
 
@@ -71,14 +72,16 @@ class CategoryFormDialog extends StatefulWidget {
 class _CategoryFormDialogState extends State<CategoryFormDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
-  late int _selectedIconCodePoint;
+  late int _iconCodePoint;
+  late String _kind;
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.initialName ?? '');
-    _selectedIconCodePoint =
+    _iconCodePoint =
         widget.initialIconCodePoint ?? categoryIconChoices.first.codePoint;
+    _kind = widget.initialKind;
   }
 
   @override
@@ -94,7 +97,8 @@ class _CategoryFormDialogState extends State<CategoryFormDialog> {
     Navigator.of(context).pop(
       CategoryFormResult(
         name: _nameController.text.trim(),
-        iconCodePoint: _selectedIconCodePoint,
+        iconCodePoint: _iconCodePoint,
+        kind: _kind,
       ),
     );
   }
@@ -115,7 +119,9 @@ class _CategoryFormDialogState extends State<CategoryFormDialog> {
                 children: [
                   CircleAvatar(
                     radius: 24,
-                    child: Icon(categoryIconData(_selectedIconCodePoint)),
+                    child: Icon(
+                      iconForCategory(widget.categoryId ?? '', _iconCodePoint),
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -134,7 +140,25 @@ class _CategoryFormDialogState extends State<CategoryFormDialog> {
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
+              Text(
+                'Used for',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                key: const Key('category-kind'),
+                segments: const [
+                  ButtonSegment(value: 'expense', label: Text('Expense')),
+                  ButtonSegment(value: 'income', label: Text('Income')),
+                  ButtonSegment(value: 'both', label: Text('Both')),
+                ],
+                selected: {_kind},
+                onSelectionChanged: (s) => setState(() => _kind = s.first),
+              ),
+              const SizedBox(height: 8),
               Text(
                 'Icon',
                 style: theme.textTheme.titleSmall?.copyWith(
@@ -146,15 +170,11 @@ class _CategoryFormDialogState extends State<CategoryFormDialog> {
                 spacing: 4,
                 runSpacing: 4,
                 children: categoryIconChoices.map((icon) {
-                  final isSelected = icon.codePoint == _selectedIconCodePoint;
+                  final isSelected = icon.codePoint == _iconCodePoint;
                   return IconButton(
                     key: ValueKey('category-icon-${icon.codePoint}'),
-                    tooltip: icon.toString(),
-                    onPressed: () {
-                      setState(() {
-                        _selectedIconCodePoint = icon.codePoint;
-                      });
-                    },
+                    onPressed: () =>
+                        setState(() => _iconCodePoint = icon.codePoint),
                     icon: Icon(icon),
                     style: IconButton.styleFrom(
                       backgroundColor: isSelected
@@ -183,279 +203,172 @@ class _CategoryFormDialogState extends State<CategoryFormDialog> {
 }
 
 class CategoriesPage extends StatefulWidget {
-  const CategoriesPage({super.key, this.repository});
-
-  /// Injected for tests; production code uses the app-wide
-  /// repository backed by the real Drift database.
-  final CustomCategoryRepository? repository;
+  const CategoriesPage({super.key});
 
   @override
   State<CategoriesPage> createState() => _CategoriesPageState();
 }
 
 class _CategoriesPageState extends State<CategoriesPage> {
-  final _uuid = const Uuid();
-
-  /// Created once in [initState]: building a new watch stream
-  /// on every build would make the StreamBuilder resubscribe
-  /// on each rebuild and re-query forever.
-  late final Stream<List<CustomCategory>> _categoriesStream;
-
-  CustomCategoryRepository get _repository =>
-      widget.repository ?? customCategoryRepository;
+  AppServices? _services;
+  Stream<List<Category>>? _categories;
 
   @override
-  void initState() {
-    super.initState();
-    _categoriesStream = _repository.watchAllCategories();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_services == null) {
+      _services = AppScope.of(context);
+      _categories = _services!.queries.watchCategories();
+    }
   }
 
-  Future<void> _showAddDialog() async {
-    final existing = await _repository.getAllCategories();
-    if (!mounted) {
-      return;
-    }
+  Future<void> _add(List<Category> all) async {
     final result = await showDialog<CategoryFormResult>(
       context: context,
-      builder: (dialogContext) => CategoryFormDialog(
-        existingNames: existing.map((category) => category.name),
+      builder: (_) => CategoryFormDialog(
+        existingNames: all.map((c) => c.name),
         isEditing: false,
       ),
     );
-    if (result == null || !mounted) {
+    if (result == null) {
       return;
     }
-    try {
-      await _repository.addCategory(
-        uuid: _uuid.v4(),
+    await _run(
+      () => _services!.categories.createCategory(
         name: result.name,
+        kind: result.kind,
         iconCodePoint: result.iconCodePoint,
-      );
-    } on ArgumentError catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.message)));
-      return;
-    }
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Category added.'),
-        duration: Duration(seconds: 5),
-        persist: false,
+        displayOrder: all.length,
       ),
     );
   }
 
-  Future<void> _showEditDialog(CustomCategory category) async {
-    final existing = await _repository.getAllCategories();
-    if (!mounted) {
-      return;
-    }
+  Future<void> _edit(Category category, List<Category> all) async {
     final result = await showDialog<CategoryFormResult>(
       context: context,
-      builder: (dialogContext) => CategoryFormDialog(
+      builder: (_) => CategoryFormDialog(
         initialName: category.name,
         initialIconCodePoint: category.iconCodePoint,
-        existingNames: existing
-            .where((other) => other.id != category.id)
-            .map((other) => other.name),
+        initialKind: category.kind,
+        categoryId: category.categoryId,
+        existingNames: all
+            .where((c) => c.categoryId != category.categoryId)
+            .map((c) => c.name),
         isEditing: true,
       ),
     );
-    if (result == null || !mounted) {
+    if (result == null) {
       return;
     }
-    final nameChanged = result.name != category.name;
-    bool updated;
-    try {
-      updated = await _repository.renameCategory(
-        id: category.id,
-        name: result.name,
+    await _run(() async {
+      if (result.kind != category.kind) {
+        await _services!.categories.changeCategoryKind(
+          category.categoryId,
+          newKind: result.kind,
+        );
+      }
+      await _services!.categories.updateCategoryPresentation(
+        category.categoryId,
+        name: result.name == category.name ? null : result.name,
         iconCodePoint: result.iconCodePoint,
       );
-    } on ArgumentError catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.message)));
-      return;
-    }
-    if (!mounted) {
-      return;
-    }
-    if (!updated) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Category no longer exists.')),
-      );
-      return;
-    }
-    // Renamed transactions are pending; sync them through the
-    // existing coordinator. Icon-only edits change no
-    // transaction row and need no sync.
-    if (nameChanged) {
-      unawaited(sheetsSyncCoordinator.requestSync());
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Category updated.'),
-        duration: Duration(seconds: 5),
-        persist: false,
-      ),
-    );
+    });
   }
 
-  Future<void> _confirmDelete(CustomCategory category) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Delete category?'),
-        content: Text(
-          'Delete "${category.name}"? Transactions using this '
-          'category will keep their category name.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) {
-      return;
+  Future<void> _toggleArchive(Category category) async {
+    await _run(() async {
+      if (category.isArchived) {
+        await _services!.categories.restoreCategory(category.categoryId);
+      } else {
+        await _services!.categories.archiveCategory(category.categoryId);
+      }
+    });
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (error) {
+      if (mounted) {
+        showMessage(context, friendlyError(error));
+      }
     }
-    final deleted = await _repository.deleteCategory(category.id);
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          deleted
-              ? 'Category deleted. Transactions keep their category name.'
-              : 'Category no longer exists.',
-        ),
-        duration: const Duration(seconds: 5),
-        persist: false,
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Categories')),
-      floatingActionButton: FloatingActionButton.extended(
-        key: const Key('add-category'),
-        onPressed: _showAddDialog,
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Add category'),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text(
-            'Built-in categories',
-            style: Theme.of(context).textTheme.titleMedium
-                ?.copyWith(fontWeight: FontWeight.w600),
+    return StreamBuilder<List<Category>>(
+      stream: _categories,
+      builder: (context, snapshot) {
+        final all = snapshot.data;
+        return Scaffold(
+          appBar: AppBar(title: const Text('Categories')),
+          floatingActionButton: FloatingActionButton.extended(
+            key: const Key('add-category'),
+            onPressed: all == null ? null : () => unawaited(_add(all)),
+            icon: const Icon(Icons.add_rounded),
+            label: const Text('Add category'),
           ),
-          const SizedBox(height: 4),
-          const Text('Built-in categories cannot be edited or deleted.'),
-          const SizedBox(height: 8),
-          ...expenseCategories.map(
-            (category) => Card(
-              child: ListTile(
-                leading: CircleAvatar(child: Icon(category.icon)),
-                title: Text(category.name),
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Custom categories',
-            style: Theme.of(context).textTheme.titleMedium
-                ?.copyWith(fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          StreamBuilder(
-            stream: _categoriesStream,
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Text('Could not load custom categories.'),
-                  ),
-                );
-              }
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: CircularProgressIndicator(),
-                  ),
-                );
-              }
-
-              final categories = snapshot.data ?? [];
-
-              if (categories.isEmpty) {
-                return const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Text(
-                      'No custom categories yet. Add one to use it '
-                      'when entering a transaction.',
+          body: all == null
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+                  children: [
+                    const Text(
+                      'Renaming a category never changes past '
+                      'transactions. Archive a category to hide it from '
+                      'new transactions while keeping its history.',
                     ),
-                  ),
-                );
-              }
-
-              return Column(
-                children: categories.map((category) {
-                  return Card(
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        child: Icon(categoryIconData(category.iconCodePoint)),
-                      ),
-                      title: Text(category.name),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            key: Key('edit-category-${category.id}'),
-                            tooltip: 'Edit category',
-                            icon: const Icon(Icons.edit_rounded),
-                            onPressed: () => _showEditDialog(category),
+                    const SizedBox(height: 12),
+                    for (final category in all)
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            child: Icon(
+                              iconForCategory(
+                                category.categoryId,
+                                category.iconCodePoint,
+                              ),
+                            ),
                           ),
-                          IconButton(
-                            key: Key('delete-category-${category.id}'),
-                            tooltip: 'Delete category',
-                            icon: const Icon(Icons.delete_rounded),
-                            onPressed: () => _confirmDelete(category),
+                          title: Text(
+                            category.name,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: category.isArchived
+                                  ? Theme.of(context).disabledColor
+                                  : null,
+                            ),
                           ),
-                        ],
+                          subtitle: Text(
+                            [
+                              categoryKindLabels[category.kind] ??
+                                  category.kind,
+                              if (category.origin == 'builtin') 'Built-in',
+                              if (category.isArchived) 'Archived',
+                            ].join(' • '),
+                          ),
+                          onTap: () => unawaited(_edit(category, all)),
+                          trailing: IconButton(
+                            key: ValueKey('archive-${category.categoryId}'),
+                            tooltip: category.isArchived
+                                ? 'Restore'
+                                : 'Archive',
+                            icon: Icon(
+                              category.isArchived
+                                  ? Icons.unarchive_rounded
+                                  : Icons.archive_outlined,
+                            ),
+                            onPressed: () =>
+                                unawaited(_toggleArchive(category)),
+                          ),
+                        ),
                       ),
-                    ),
-                  );
-                }).toList(),
-              );
-            },
-          ),
-          // Room for the floating action button.
-          const SizedBox(height: 80),
-        ],
-      ),
+                  ],
+                ),
+        );
+      },
     );
   }
 }

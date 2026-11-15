@@ -2,57 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../database/repository_provider.dart';
 import '../../data/notifications/notification.dart';
 import '../notifications/notification_manager.dart';
-import 'google_sheets_backend.dart';
-import 'sheets_sync.dart';
-
-/// Source of pending work and the place synced state is recorded.
-///
-/// Kept separate from Drift so the coordinator can be tested with a
-/// fake store and no database. [markSynced] is conditional: it
-/// returns `true` only when the local row is still the revision
-/// that was uploaded (see `markTransactionSyncedIfUnchanged`).
-abstract class SyncTransactionStore {
-  Future<List<SyncTransaction>> getPending();
-  Future<bool> markSynced(SyncTransaction transaction);
-}
-
-/// Production store backed by the Drift transaction repository.
-class DriftSyncTransactionStore implements SyncTransactionStore {
-  @override
-  Future<List<SyncTransaction>> getPending() async {
-    final rows = await transactionRepository.getPendingTransactions();
-    return rows
-        .map(
-          (row) => SyncTransaction(
-            localId: row.id,
-            uuid: row.uuid,
-            transactionDate: row.transactionDate,
-            type: row.type,
-            category: row.category,
-            description: row.description ?? '',
-            amount: row.amount,
-            paymentMethod: row.paymentMethod,
-            notes: row.notes,
-            updatedAt: row.updatedAt,
-            syncRevision: row.syncRevision,
-            deleted: row.deleted,
-          ),
-        )
-        .toList();
-  }
-
-  @override
-  Future<bool> markSynced(SyncTransaction transaction) {
-    return transactionRepository.markTransactionSyncedIfUnchanged(
-      id: transaction.localId,
-      syncRevision: transaction.syncRevision,
-      deleted: transaction.deleted,
-    );
-  }
-}
+import 'sync_errors.dart';
+import 'v2/drift_v2_sync_store.dart';
+import 'v2/sheets_v2_engine.dart';
 
 /// Coordinates Sheets synchronization without ever blocking local
 /// saving.
@@ -76,9 +30,9 @@ class DriftSyncTransactionStore implements SyncTransactionStore {
 ///   retry attempt.
 class SheetsSyncCoordinator {
   SheetsSyncCoordinator({
-    required SheetsSyncBackend backend,
-    required SyncTransactionStore store,
-    SheetsSyncEngine? engine,
+    required SheetsV2SyncBackend backend,
+    required V2SyncStore store,
+    SheetsV2SyncEngine? engine,
     void Function({
       required NotificationType type,
       required String title,
@@ -87,12 +41,12 @@ class SheetsSyncCoordinator {
     onNotification,
   }) : _backend = backend,
        _store = store,
-       _engine = engine ?? SheetsSyncEngine(),
+       _engine = engine ?? SheetsV2SyncEngine(),
        _onNotification = onNotification;
 
-  final SheetsSyncBackend _backend;
-  final SyncTransactionStore _store;
-  final SheetsSyncEngine _engine;
+  final SheetsV2SyncBackend _backend;
+  final V2SyncStore _store;
+  final SheetsV2SyncEngine _engine;
   final void Function({
     required NotificationType type,
     required String title,
@@ -130,6 +84,7 @@ class SheetsSyncCoordinator {
   Future<void>? _currentRun;
   int _consecutiveFailures = 0;
   bool _failureNotified = false;
+  bool _unsyncableNotified = false;
   Timer? _retryTimer;
 
   /// True when the last sync attempt found that Sheets scopes have
@@ -226,7 +181,24 @@ class SheetsSyncCoordinator {
         onSynced: (transaction) => _store.markSynced(transaction),
       );
 
-      if (result.failedUuids.isEmpty) {
+      final retryable = result.failedUuids
+          .where((uuid) => !result.unsyncableUuids.contains(uuid))
+          .toList();
+      if (result.unsyncableUuids.isNotEmpty && !_unsyncableNotified) {
+        // Amount above the Sheets limit or incomplete data: these
+        // stay pending until the local data changes. A timer retry
+        // cannot fix them, so they never schedule one.
+        _unsyncableNotified = true;
+        _notify(
+          type: NotificationType.syncFailed,
+          title: 'Some transactions cannot be backed up',
+          message:
+              'They are saved locally. Their amount is too large for '
+              'Google Sheets or their details are incomplete.',
+        );
+      }
+
+      if (retryable.isEmpty) {
         authorizationMissing = false;
         _consecutiveFailures = 0;
         if (result.syncedUuids.isNotEmpty) {
@@ -236,6 +208,9 @@ class SheetsSyncCoordinator {
             title: 'Google Sheets backup complete',
             message: 'Pending transactions were backed up.',
           );
+        }
+        if (result.unsyncableUuids.isEmpty) {
+          _unsyncableNotified = false;
         }
         return false;
       }
@@ -290,9 +265,3 @@ class SheetsSyncCoordinator {
     _retryTimer = null;
   }
 }
-
-/// App-wide coordinator, created lazily with the real backend/store.
-final SheetsSyncCoordinator sheetsSyncCoordinator = SheetsSyncCoordinator(
-  backend: GoogleSheetsBackend.instance,
-  store: DriftSyncTransactionStore(),
-);

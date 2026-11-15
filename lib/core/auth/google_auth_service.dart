@@ -5,7 +5,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:googleapis/sheets/v4.dart' as sheets;
 
-import '../sync/sheets_sync.dart';
+import '../sync/sync_errors.dart';
 
 /// Google authentication for Sheets backup.
 ///

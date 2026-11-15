@@ -23,6 +23,13 @@ class GoogleSheetsV2Backend implements SheetsV2SyncBackend {
   }) : _clientFactory = (({required bool interactive}) => client),
        _cachedClient = client;
 
+  /// Test constructor: injects a client factory, so tests can record
+  /// the authorization mode a backend requests.
+  GoogleSheetsV2Backend.withClientFactory({
+    required this.interactive,
+    required SheetsApiClientFactory clientFactory,
+  }) : _clientFactory = clientFactory;
+
   /// Background mode: never initiates authentication/authorization.
   static final GoogleSheetsV2Backend instance = GoogleSheetsV2Backend._(
     interactive: false,

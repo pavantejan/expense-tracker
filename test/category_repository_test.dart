@@ -30,9 +30,26 @@ void main() {
       }
     });
 
-    test('built-in renaming is rejected', () async {
+    test('built-in categories can be renamed; the id is stable', () async {
+      final renamed = await fx.categories.updateCategoryPresentation(
+        'food',
+        name: 'Meals',
+      );
+      expect(renamed.categoryId, 'food');
+      expect(renamed.name, 'Meals');
+    });
+
+    test('names stay unique case-insensitively', () async {
       await expectLater(
-        fx.categories.updateCategoryPresentation('food', name: 'Meals'),
+        fx.categories.createCategory(
+          name: ' food ',
+          kind: 'both',
+          iconCodePoint: 0,
+        ),
+        throwsA(isA<PostingValidationException>()),
+      );
+      await expectLater(
+        fx.categories.updateCategoryPresentation('travel', name: 'FOOD'),
         throwsA(isA<PostingValidationException>()),
       );
     });
