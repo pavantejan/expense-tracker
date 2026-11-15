@@ -92,6 +92,11 @@ class DriftV2SyncStore implements V2SyncStore {
       }
     }
 
+    final merchant = row.merchantId == null
+        ? null
+        : await lookup.merchantName(row.merchantId!);
+    final tags = await lookup.tagNames(row.id);
+
     return SheetV2Source(
       uuid: row.uuid,
       kind: row.kind,
@@ -118,6 +123,8 @@ class DriftV2SyncStore implements V2SyncStore {
       originalUuid: originalUuid,
       relatedUuid: row.relatedTransactionId,
       original: original,
+      merchant: merchant ?? '',
+      tags: tags.join(', '),
     );
   }
 }
@@ -156,6 +163,28 @@ class _Lookup {
     return _accounts[uuid] = row == null
         ? null
         : SheetV2AccountRef(id: row.uuid, name: row.name);
+  }
+
+  Future<String?> merchantName(String uuid) async {
+    final row = await (_database.select(
+      _database.merchants,
+    )..where((t) => t.uuid.equals(uuid))).getSingleOrNull();
+    return row?.name;
+  }
+
+  /// Tag names of a transaction, sorted case-insensitively.
+  Future<List<String>> tagNames(int transactionId) async {
+    final links = await (_database.select(
+      _database.transactionTags,
+    )..where((t) => t.transactionId.equals(transactionId))).get();
+    if (links.isEmpty) {
+      return const [];
+    }
+    final tags = await (_database.select(
+      _database.tags,
+    )..where((t) => t.id.isIn(links.map((l) => l.tagId)))).get();
+    return tags.map((t) => t.name).toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
   }
 
   Future<String?> categoryName(String categoryId) async {

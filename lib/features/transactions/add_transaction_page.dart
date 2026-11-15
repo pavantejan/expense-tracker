@@ -10,6 +10,8 @@ import '../../core/utils/formatting.dart';
 import '../../data/database/v2/app_database_v2.dart';
 import '../../data/notifications/notification.dart';
 import '../../data/repositories/financial_transaction_repository.dart';
+import '../../data/repositories/merchant_tag_repository.dart';
+import '../../data/repositories/quick_entry_service.dart';
 import '../accounts/account_form_page.dart';
 import '../common/ui.dart';
 
@@ -24,11 +26,15 @@ class AddTransactionPage extends StatefulWidget {
     this.transactionUuid,
     this.initialType = EntryType.expense,
     this.initialAccountUuid,
+    this.templateUuid,
   });
 
   final String? transactionUuid;
   final EntryType initialType;
   final String? initialAccountUuid;
+
+  /// Pre-fills a new entry from this template.
+  final String? templateUuid;
 
   @override
   State<AddTransactionPage> createState() => _AddTransactionPageState();
@@ -39,6 +45,9 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   final _amountController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _notesController = TextEditingController();
+  final _merchantController = TextEditingController();
+  final _merchantFocus = FocusNode();
+  final _tagController = TextEditingController();
 
   late AppServices _services;
   bool _loading = true;
@@ -57,6 +66,13 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   String _paymentMethod = 'UPI';
   DateTime _date = DateTime.now();
 
+  List<Merchant> _merchants = const [];
+  List<Tag> _allTags = const [];
+  List<TransactionTemplate> _templates = const [];
+  List<String> _tags = [];
+  bool _categoryTouched = false;
+  String? _templateUuid;
+
   bool get _isEdit => widget.transactionUuid != null;
 
   /// Kinds with editable amount/accounts/category.
@@ -71,6 +87,78 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
 
   bool get _amountEditable => _fullyEditable || _existing?.kind == 'refund';
 
+  bool get _showMerchant {
+    final kind = _existing?.kind;
+    if (kind == null) {
+      return _type != EntryType.transfer;
+    }
+    return kind == 'expense' || kind == 'income' || kind == 'refund';
+  }
+
+  bool get _canSaveTemplate {
+    final kind = _existing?.kind;
+    return kind == null ||
+        kind == 'expense' ||
+        kind == 'income' ||
+        kind == 'transfer' ||
+        kind == 'card_payment';
+  }
+
+  Future<void> _saveAsTemplate() async {
+    final suggested = [
+      _merchantController.text.trim(),
+      _descriptionController.text.trim(),
+      _categories.where((c) => c.categoryId == _categoryId).firstOrNull?.name ??
+          '',
+    ].firstWhere((s) => s.isNotEmpty, orElse: () => 'My template');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _TemplateNameDialog(initial: suggested),
+    );
+    if (name == null || !mounted) {
+      return;
+    }
+    try {
+      final merchantName = _merchantController.text.trim();
+      final merchant = !_showMerchant || merchantName.isEmpty
+          ? null
+          : await _services.merchantsTags.findOrCreateMerchant(merchantName);
+      final tagUuids = <String>[];
+      for (final tag in _tags) {
+        tagUuids.add((await _services.merchantsTags.findOrCreateTag(tag)).uuid);
+      }
+      final amount = Money.tryParse(_amountController.text);
+      final isTransfer = _type == EntryType.transfer;
+      await _services.templates.createTemplate(
+        name: name,
+        kind: _entryKind(_type).name,
+        amountMinorUnits: amount != null && amount.isPositive
+            ? amount.amountMinorUnits
+            : null,
+        accountId: isTransfer ? null : _accountUuid,
+        sourceAccountId: isTransfer ? _fromAccountUuid : null,
+        destinationAccountId: isTransfer ? _toAccountUuid : null,
+        categoryId: isTransfer ? null : _categoryId,
+        merchantId: merchant?.uuid,
+        tagUuids: tagUuids,
+        paymentChannel: _paymentMethod,
+        description: _descriptionController.text.trim().isEmpty
+            ? null
+            : _descriptionController.text.trim(),
+        notes: _notesController.text.trim().isEmpty
+            ? null
+            : _notesController.text.trim(),
+      );
+      if (mounted) {
+        showMessage(context, 'Saved "$name" to your favourites.');
+      }
+    } catch (error) {
+      if (mounted) {
+        showMessage(context, friendlyError(error));
+      }
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -81,16 +169,119 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _merchantFocus.addListener(() {
+      if (!_merchantFocus.hasFocus) {
+        _onMerchantChosen(_merchantController.text);
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _amountController.dispose();
     _descriptionController.dispose();
     _notesController.dispose();
+    _merchantController.dispose();
+    _merchantFocus.dispose();
+    _tagController.dispose();
     super.dispose();
+  }
+
+  static EntryKind _entryKind(EntryType type) => switch (type) {
+    EntryType.expense => EntryKind.expense,
+    EntryType.income => EntryKind.income,
+    EntryType.transfer => EntryKind.transfer,
+  };
+
+  bool _usableAccount(String? uuid) =>
+      uuid != null && _accounts.any((a) => a.uuid == uuid && !a.isArchived);
+
+  /// Fills the form from [template]; the user can still change anything.
+  void _applyTemplate(TransactionTemplate template) {
+    _templateUuid = template.uuid;
+    _type = switch (template.kind) {
+      'income' => EntryType.income,
+      'transfer' => EntryType.transfer,
+      _ => EntryType.expense,
+    };
+    if (_usableAccount(template.accountId)) {
+      _accountUuid = template.accountId;
+    }
+    if (_usableAccount(template.sourceAccountId)) {
+      _fromAccountUuid = template.sourceAccountId;
+    }
+    if (_usableAccount(template.destinationAccountId)) {
+      _toAccountUuid = template.destinationAccountId;
+    }
+    if (template.categoryId != null) {
+      _categoryId = template.categoryId;
+      _categoryTouched = true;
+    }
+    if (paymentMethodChoices.contains(template.paymentChannel)) {
+      _paymentMethod = template.paymentChannel;
+    }
+    final amount = template.amountMinorUnits;
+    _amountController.text = amount == null
+        ? ''
+        : Money(amount, template.currencyCode).toDecimalString();
+    _descriptionController.text = template.description ?? '';
+    _notesController.text = template.notes ?? '';
+    _merchantController.text =
+        _merchants
+            .where((m) => m.uuid == template.merchantId)
+            .firstOrNull
+            ?.name ??
+        '';
+    final tagNames = {for (final t in _allTags) t.uuid: t.name};
+    _tags = splitTagIds(template.tagIds)
+        .map((id) => tagNames[id])
+        .whereType<String>()
+        .toList();
+    _ensureCategoryForType();
+  }
+
+  /// Suggests the merchant's usual category unless the user already
+  /// picked one.
+  void _onMerchantChosen(String name) {
+    if (_categoryTouched || !mounted) {
+      return;
+    }
+    final key = nameKeyOf(name);
+    final merchant = _merchants.where((m) => m.nameKey == key).firstOrNull;
+    final suggested = merchant?.defaultCategoryId;
+    if (suggested == null) {
+      return;
+    }
+    final side = _type == EntryType.income ? 'income' : 'expense';
+    if (categoriesForSide(
+      _categories,
+      side,
+    ).any((c) => c.categoryId == suggested)) {
+      setState(() => _categoryId = suggested);
+    }
+  }
+
+  void _addTag(String raw) {
+    final name = raw.trim();
+    _tagController.clear();
+    if (name.isEmpty ||
+        _tags.any((t) => t.toLowerCase() == name.toLowerCase())) {
+      setState(() {});
+      return;
+    }
+    setState(() => _tags = [..._tags, name]);
   }
 
   Future<void> _load() async {
     final accounts = await _services.accounts.listAccounts();
     final categories = await _services.categories.listCategories();
+    _accounts = accounts;
+    _categories = categories;
+    _merchants = await _services.merchantsTags.listMerchants();
+    _allTags = await _services.merchantsTags.listTags();
+    _templates = await _services.templates.listTemplates();
     _type = widget.initialType;
     final uuid = widget.transactionUuid;
     if (uuid != null) {
@@ -121,25 +312,50 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
         ).toDecimalString();
         _descriptionController.text = tx.description ?? '';
         _notesController.text = tx.notes ?? '';
+        _merchantController.text = view.merchant?.name ?? '';
+        _tags = view.tags.map((t) => t.name).toList();
+        _categoryTouched = true;
       }
     } else {
       final active = accounts.where((a) => !a.isArchived).toList();
       final initial = widget.initialAccountUuid;
-      _accountUuid = initial ?? active.firstOrNull?.uuid;
+      // Smart defaults: the latest entry of the same type.
+      final defaults = await _services.entries.defaultsFor(_entryKind(_type));
+      _accountUuid =
+          initial ??
+          (_usableAccount(defaults.accountUuid)
+              ? defaults.accountUuid
+              : active.firstOrNull?.uuid);
       _fromAccountUuid =
           initial ??
-          active.where((a) => !isLiabilityKind(a.kind)).firstOrNull?.uuid;
-      _toAccountUuid = active
-          .where((a) => a.uuid != _fromAccountUuid)
-          .firstOrNull
-          ?.uuid;
+          (_usableAccount(defaults.fromAccountUuid)
+              ? defaults.fromAccountUuid
+              : active
+                    .where((a) => !isLiabilityKind(a.kind))
+                    .firstOrNull
+                    ?.uuid);
+      _toAccountUuid =
+          _usableAccount(defaults.toAccountUuid) &&
+              defaults.toAccountUuid != _fromAccountUuid
+          ? defaults.toAccountUuid
+          : active.where((a) => a.uuid != _fromAccountUuid).firstOrNull?.uuid;
+      _categoryId = defaults.categoryId;
+      final channel = defaults.paymentChannel;
+      if (channel != null && paymentMethodChoices.contains(channel)) {
+        _paymentMethod = channel;
+      }
+      final templateUuid = widget.templateUuid;
+      if (templateUuid != null) {
+        final template = await _services.templates.templateByUuid(templateUuid);
+        if (template != null) {
+          _applyTemplate(template);
+        }
+      }
     }
     if (!mounted) {
       return;
     }
     setState(() {
-      _accounts = accounts;
-      _categories = categories;
       _ensureCategoryForType();
       _loading = false;
     });
@@ -240,17 +456,31 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       }
     }
 
+    if (_tagController.text.trim().isNotEmpty) {
+      _addTag(_tagController.text);
+    }
     setState(() => _saving = true);
     try {
-      final transactions = _services.transactions;
       final existing = _existing;
       if (existing == null) {
-        await _create(
-          transactions,
-          amount: amount,
-          occurredAt: occurredAt,
-          description: description.isEmpty ? null : description,
-          notes: notes.isEmpty ? null : notes,
+        await _services.entries.create(
+          EntryDraft(
+            kind: _entryKind(_type),
+            amount: amount,
+            occurredAt: occurredAt,
+            paymentChannel: _paymentMethod,
+            accountUuid: _accountUuid,
+            fromAccountUuid: _fromAccountUuid,
+            toAccountUuid: _toAccountUuid,
+            categoryId: _type == EntryType.transfer ? null : _categoryId,
+            description: description,
+            notes: notes,
+            merchantName: _type == EntryType.transfer
+                ? null
+                : _merchantController.text,
+            tagNames: _tags,
+            templateUuid: _templateUuid,
+          ),
         );
         NotificationManager.instance.add(
           type: NotificationType.transactionAdded,
@@ -258,9 +488,11 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
           message: '${amount.format()} saved.',
         );
       } else {
-        await transactions.editTransaction(
+        await _services.entries.edit(
           existing.uuid,
           _buildEdit(existing, amount, occurredAt, description, notes),
+          merchantName: _showMerchant ? _merchantController.text : null,
+          tagNames: _tags,
         );
         NotificationManager.instance.add(
           type: NotificationType.transactionUpdated,
@@ -280,60 +512,6 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       if (mounted) {
         setState(() => _saving = false);
       }
-    }
-  }
-
-  Future<void> _create(
-    FinancialTransactionRepository transactions, {
-    required Money amount,
-    required DateTime occurredAt,
-    String? description,
-    String? notes,
-  }) async {
-    switch (_type) {
-      case EntryType.expense:
-        await transactions.createExpense(
-          accountUuid: _accountUuid!,
-          categoryId: _categoryId!,
-          amount: amount,
-          occurredAt: occurredAt,
-          paymentChannel: _paymentMethod,
-          description: description,
-          notes: notes,
-        );
-      case EntryType.income:
-        await transactions.createIncome(
-          accountUuid: _accountUuid!,
-          categoryId: _categoryId!,
-          amount: amount,
-          occurredAt: occurredAt,
-          paymentChannel: _paymentMethod,
-          description: description,
-          notes: notes,
-        );
-      case EntryType.transfer:
-        final destination = _accountById(_toAccountUuid);
-        if (destination != null && isLiabilityKind(destination.kind)) {
-          await transactions.createCardPayment(
-            sourceAccountUuid: _fromAccountUuid!,
-            cardAccountUuid: _toAccountUuid!,
-            amount: amount,
-            occurredAt: occurredAt,
-            paymentChannel: _paymentMethod,
-            description: description,
-            notes: notes,
-          );
-        } else {
-          await transactions.createTransfer(
-            sourceAccountUuid: _fromAccountUuid!,
-            destinationAccountUuid: _toAccountUuid!,
-            amount: amount,
-            occurredAt: occurredAt,
-            paymentChannel: _paymentMethod,
-            description: description,
-            notes: notes,
-          );
-        }
     }
   }
 
@@ -547,6 +725,13 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                     : transactionKindLabels[existing.kind] ?? 'Transaction'),
         ),
         actions: [
+          if (existing == null && !_loading)
+            IconButton(
+              key: const Key('save-as-template'),
+              tooltip: 'Save as template',
+              icon: const Icon(Icons.bookmark_add_outlined),
+              onPressed: _saveAsTemplate,
+            ),
           if (existing != null && existing.status == 'active')
             PopupMenuButton<String>(
               key: const Key('transaction-menu'),
@@ -558,6 +743,8 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                     unawaited(_reverse());
                   case 'delete':
                     unawaited(_delete());
+                  case 'template':
+                    unawaited(_saveAsTemplate());
                 }
               },
               itemBuilder: (_) => [
@@ -565,6 +752,11 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
                   const PopupMenuItem(value: 'refund', child: Text('Refund')),
                 if (canReverse)
                   const PopupMenuItem(value: 'reverse', child: Text('Reverse')),
+                if (_canSaveTemplate)
+                  const PopupMenuItem(
+                    value: 'template',
+                    child: Text('Save as template'),
+                  ),
                 const PopupMenuItem(value: 'delete', child: Text('Delete')),
               ],
             ),
@@ -609,6 +801,28 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (existing == null && _templates.any((t) => t.isFavourite)) ...[
+            SizedBox(
+              height: 40,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  for (final template in _templates.where((t) => t.isFavourite))
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        key: ValueKey('favourite-${template.uuid}'),
+                        avatar: const Icon(Icons.bolt_rounded, size: 18),
+                        label: Text(template.name),
+                        onPressed: () =>
+                            setState(() => _applyTemplate(template)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (existing == null)
             SegmentedButton<EntryType>(
               segments: const [
@@ -664,6 +878,7 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
           TextFormField(
             key: const Key('amount-field'),
             controller: _amountController,
+            autofocus: !_isEdit,
             enabled: _amountEditable && !_existingReversed,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: const InputDecoration(
@@ -717,10 +932,16 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
               categories: _categoryChoices(),
               value: _categoryId,
               enabled: !_existingReversed,
-              onChanged: (v) => setState(() => _categoryId = v),
+              onChanged: (v) => setState(() {
+                _categoryId = v;
+                _categoryTouched = true;
+              }),
             ),
             const SizedBox(height: 16),
           ],
+          if (_showMerchant) ...[_merchantField(), const SizedBox(height: 16)],
+          _tagsField(),
+          const SizedBox(height: 16),
           if (_amountEditable) ...[
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -778,6 +999,132 @@ class _AddTransactionPageState extends State<AddTransactionPage> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _merchantField() {
+    return RawAutocomplete<String>(
+      textEditingController: _merchantController,
+      focusNode: _merchantFocus,
+      optionsBuilder: (value) {
+        final query = value.text.trim().toLowerCase();
+        if (query.isEmpty) {
+          return const Iterable<String>.empty();
+        }
+        return _merchants
+            .map((m) => m.name)
+            .where((name) => name.toLowerCase().contains(query))
+            .take(6);
+      },
+      onSelected: _onMerchantChosen,
+      fieldViewBuilder: (context, controller, focusNode, onSubmitted) {
+        return TextFormField(
+          key: const Key('merchant-field'),
+          controller: controller,
+          focusNode: focusNode,
+          textCapitalization: TextCapitalization.words,
+          enabled: !_existingReversed,
+          decoration: const InputDecoration(
+            labelText: 'Merchant (optional)',
+            hintText: 'e.g. Swiggy, Big Bazaar',
+            prefixIcon: Icon(Icons.storefront_rounded),
+            border: OutlineInputBorder(),
+          ),
+          onFieldSubmitted: (_) => onSubmitted(),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240, maxWidth: 420),
+              child: ListView(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                children: [
+                  for (final option in options)
+                    ListTile(
+                      leading: const Icon(Icons.storefront_rounded),
+                      title: Text(option),
+                      onTap: () => onSelected(option),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _tagsField() {
+    final query = _tagController.text.trim().toLowerCase();
+    final selected = _tags.map((t) => t.toLowerCase()).toSet();
+    final suggestions = _allTags
+        .where(
+          (t) =>
+              !selected.contains(t.nameKey) &&
+              (query.isEmpty || t.nameKey.contains(query)),
+        )
+        .take(6)
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          key: const Key('tag-field'),
+          controller: _tagController,
+          enabled: !_existingReversed,
+          decoration: const InputDecoration(
+            labelText: 'Tags (optional)',
+            hintText: 'Type a tag and press enter',
+            prefixIcon: Icon(Icons.sell_outlined),
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: _addTag,
+          onChanged: (value) {
+            if (value.endsWith(',')) {
+              _addTag(value.substring(0, value.length - 1));
+            } else {
+              setState(() {});
+            }
+          },
+        ),
+        if (_tags.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              for (final tag in _tags)
+                InputChip(
+                  label: Text(tag),
+                  onDeleted: _existingReversed
+                      ? null
+                      : () => setState(
+                          () => _tags = _tags.where((t) => t != tag).toList(),
+                        ),
+                ),
+            ],
+          ),
+        ],
+        if (suggestions.isNotEmpty && !_existingReversed) ...[
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final tag in suggestions)
+                ActionChip(
+                  avatar: const Icon(Icons.add_rounded, size: 16),
+                  label: Text(tag.name),
+                  onPressed: () => _addTag(tag.name),
+                ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 
@@ -1062,6 +1409,65 @@ class _RefundDialogState extends State<_RefundDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(onPressed: _submit, child: const Text('Save refund')),
+      ],
+    );
+  }
+}
+
+class _TemplateNameDialog extends StatefulWidget {
+  const _TemplateNameDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_TemplateNameDialog> createState() => _TemplateNameDialogState();
+}
+
+class _TemplateNameDialogState extends State<_TemplateNameDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Save as template'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            key: const Key('template-name'),
+            controller: _controller,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Template name'),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Templates appear as one-tap favourites when adding a '
+            'transaction. Leave the amount empty to enter it each time.',
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final name = _controller.text.trim();
+            if (name.isNotEmpty) {
+              Navigator.of(context).pop(name);
+            }
+          },
+          child: const Text('Save'),
+        ),
       ],
     );
   }

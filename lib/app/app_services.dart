@@ -10,6 +10,9 @@ import '../data/repositories/account_repository.dart';
 import '../data/repositories/category_repository.dart';
 import '../data/repositories/financial_transaction_repository.dart';
 import '../data/repositories/ledger_query_service.dart';
+import '../data/repositories/merchant_tag_repository.dart';
+import '../data/repositories/quick_entry_service.dart';
+import '../data/repositories/template_repository.dart';
 
 /// The app's composition root (ADR-014): the one V2 database and the
 /// services built on it. Replaces the old global database singleton.
@@ -24,8 +27,17 @@ class AppServices {
     DateTime Function()? clock,
   }) : accounts = AccountRepository(database, clock: clock),
        categories = CategoryRepository(database),
-       transactions = FinancialTransactionRepository(database, clock: clock) {
+       transactions = FinancialTransactionRepository(database, clock: clock),
+       merchantsTags = MerchantTagRepository(database, clock: clock),
+       templates = TemplateRepository(database, clock: clock) {
     queries = LedgerQueryService(database, transactions);
+    entries = QuickEntryService(
+      database,
+      transactions,
+      accounts,
+      merchantsTags,
+      templates,
+    );
     sync = SheetsSyncCoordinator(
       backend: syncBackend ?? GoogleSheetsV2Backend.instance,
       store: DriftV2SyncStore(database, transactions),
@@ -43,7 +55,10 @@ class AppServices {
   final AccountRepository accounts;
   final CategoryRepository categories;
   final FinancialTransactionRepository transactions;
+  final MerchantTagRepository merchantsTags;
+  final TemplateRepository templates;
   late final LedgerQueryService queries;
+  late final QuickEntryService entries;
   late final SheetsSyncCoordinator sync;
 
   Future<void> close() async {

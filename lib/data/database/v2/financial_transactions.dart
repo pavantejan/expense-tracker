@@ -2,6 +2,7 @@ import 'package:drift/drift.dart';
 
 import 'accounts.dart';
 import 'categories.dart';
+import 'merchants_tags.dart';
 
 /// The business event the user understands (blueprint section 5.2, V2
 /// model): a purchase, salary, transfer, payment, refund, adjustment,
@@ -67,6 +68,10 @@ class FinancialTransactions extends Table {
   @ReferenceName('refundTransactions')
   TextColumn get refundAccountId =>
       text().nullable().references(Accounts, #uuid)();
+
+  /// Optional counterparty (Module 2, schema 9). Nulled when the
+  /// merchant is deleted; the description text is kept.
+  TextColumn get merchantId => text().nullable().references(Merchants, #uuid)();
 
   /// Event amount in integer minor units, always strictly positive.
   /// For a refund, the refunded amount; for a transfer, the moved

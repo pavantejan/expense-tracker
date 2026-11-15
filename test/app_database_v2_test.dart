@@ -27,8 +27,8 @@ void main() {
       await database.close();
     });
 
-    test('schema version is 8 and all V2 tables exist', () async {
-      expect(database.schemaVersion, 8);
+    test('schema version is 9 and all V2 tables exist', () async {
+      expect(database.schemaVersion, 9);
       final rows = await database
           .customSelect("SELECT name FROM sqlite_master WHERE type = 'table'")
           .get();
@@ -44,6 +44,10 @@ void main() {
           'transaction_history',
           'app_settings',
           'notifications',
+          'merchants',
+          'tags',
+          'transaction_tags',
+          'transaction_templates',
         ]),
       );
     });

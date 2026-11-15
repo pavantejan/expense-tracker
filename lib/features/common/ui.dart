@@ -246,6 +246,9 @@ String transactionTitle(TransactionView view) {
   if (description != null && description.isNotEmpty) {
     return description;
   }
+  if (view.merchant != null) {
+    return view.merchant!.name;
+  }
   if ((view.kind == 'expense' || view.kind == 'income') &&
       view.category != null) {
     return view.category!.name;
@@ -265,6 +268,13 @@ String transactionSubtitle(TransactionView view) {
   } else if (view.category != null &&
       (view.transaction.description?.trim().isNotEmpty ?? false)) {
     parts.add(view.category!.name);
+  }
+  if (view.merchant != null &&
+      view.merchant!.name != view.transaction.description?.trim()) {
+    parts.add(view.merchant!.name);
+  }
+  if (view.tags.isNotEmpty) {
+    parts.add(view.tags.map((t) => '#${t.name}').join(' '));
   }
   if (view.isReversed) {
     parts.add('Reversed');

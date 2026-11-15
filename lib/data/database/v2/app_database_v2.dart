@@ -6,9 +6,12 @@ import 'app_settings.dart';
 import 'categories.dart';
 import 'financial_transactions.dart';
 import 'ledger_accounts.dart';
+import 'merchants_tags.dart';
 import 'notifications.dart';
 import 'postings.dart';
 import 'transaction_history.dart';
+import 'transaction_tags.dart';
+import 'transaction_templates.dart';
 
 part 'app_database_v2.g.dart';
 
@@ -61,6 +64,10 @@ typedef V2DatabaseOpener = QueryExecutor Function(String name);
     TransactionHistory,
     AppSettings,
     Notifications,
+    Merchants,
+    Tags,
+    TransactionTags,
+    TransactionTemplates,
   ],
 )
 class AppDatabaseV2 extends _$AppDatabaseV2 {
@@ -73,13 +80,31 @@ class AppDatabaseV2 extends _$AppDatabaseV2 {
     return driftDatabase(name: name);
   }
 
+  /// Schema history of the V2 database (fresh baseline 8, blueprint
+  /// section 7.4; later changes are ordinary migrations):
+  /// - 8: Module 1 baseline (created with `onCreate`).
+  /// - 9: Module 2 merchants, tags, transaction tags, templates, and
+  ///   `financial_transactions.merchant_id`.
   @override
-  int get schemaVersion => 8;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (Migrator m) async {
       await m.createAll();
+    },
+    onUpgrade: (Migrator m, int from, int to) async {
+      if (from < 9) {
+        await m.createTable(merchants);
+        await m.createTable(tags);
+        await m.createTable(transactionTags);
+        await m.createIndex(transactionTagsTag);
+        await m.createTable(transactionTemplates);
+        await m.addColumn(
+          financialTransactions,
+          financialTransactions.merchantId,
+        );
+      }
     },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');

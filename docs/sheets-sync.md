@@ -33,8 +33,12 @@
 >   decimal-string arithmetic (no `double` division) and read back with
 >   UNFORMATTED_VALUE. Amounts above `7036874417766399` paise are never
 >   written: the row stays pending and the user gets one notification.
-> - Merchant, Tags and CardId are empty until Modules 2 and 6. There is
->   no Accounts worksheet (blueprint §8.4).
+> - Merchant (T) and Tags (U, comma-separated, sorted) are filled since
+>   Module 2; `Source` (X) is `template` for entries saved from a
+>   template. Merchant/tag *renames* do not re-sync old rows (like
+>   category renames); deleting a merchant or tag re-syncs the affected
+>   rows. CardId stays empty until Module 6. There is no Accounts
+>   worksheet (blueprint §8.4).
 
 Branch: `feature/fix-google-sheets-sync`, base `master` (2231948, 31 Oct 2026).
 Environment note (corrected 31 Oct 2026): a Flutter/Dart

@@ -172,6 +172,84 @@ class FinancialTransactionRepository {
   }
 
   // -----------------------------------------------------------------
+  // Merchant and tags (Module 2).
+  // -----------------------------------------------------------------
+
+  /// Sets the merchant and the full tag set of a transaction in one
+  /// database transaction. When [recordEdit] is true (a user edit of an
+  /// existing row) the revision is bumped, the row returns to pending
+  /// sync, and an `edited` history row is written; right after creation
+  /// the row is already pending, so no extra revision is needed. Does
+  /// nothing when neither the merchant nor the tags change.
+  Future<void> setMerchantAndTags(
+    String uuid, {
+    required String? merchantUuid,
+    required Iterable<int> tagIds,
+    required bool recordEdit,
+  }) async {
+    final now = _clock();
+    await _database.transaction(() async {
+      final existing = await _requireTransaction(uuid);
+      final links = await (_database.select(
+        _database.transactionTags,
+      )..where((t) => t.transactionId.equals(existing.id))).get();
+      final current = links.map((l) => l.tagId).toSet();
+      final wanted = tagIds.toSet();
+      final sameTags =
+          current.length == wanted.length && current.containsAll(wanted);
+      if (existing.merchantId == merchantUuid && sameTags) {
+        return;
+      }
+      if (!sameTags) {
+        await (_database.delete(
+          _database.transactionTags,
+        )..where((t) => t.transactionId.equals(existing.id))).go();
+        for (final tagId in wanted) {
+          await _database
+              .into(_database.transactionTags)
+              .insert(
+                TransactionTagsCompanion.insert(
+                  transactionId: existing.id,
+                  tagId: tagId,
+                ),
+              );
+        }
+      }
+      await (_database.update(
+        _database.financialTransactions,
+      )..where((t) => t.id.equals(existing.id))).write(
+        recordEdit
+            ? FinancialTransactionsCompanion(
+                merchantId: Value(merchantUuid),
+                updatedAt: Value(now),
+                syncRevision: Value(existing.syncRevision + 1),
+                syncStatus: const Value('pending'),
+              )
+            : FinancialTransactionsCompanion(merchantId: Value(merchantUuid)),
+      );
+      if (recordEdit) {
+        final after = await _requireTransaction(uuid);
+        await _insertHistoryLocked(
+          transactionId: existing.id,
+          changeKind: 'edited',
+          beforeSnapshot: _snapshotJson(existing, tagIds: current),
+          afterSnapshot: _snapshotJson(after, tagIds: wanted),
+          now: now,
+        );
+      }
+    });
+  }
+
+  /// Tag ids linked to a transaction.
+  Future<Set<int>> tagIdsForTransaction(String uuid) async {
+    final existing = await _requireTransaction(uuid);
+    final links = await (_database.select(
+      _database.transactionTags,
+    )..where((t) => t.transactionId.equals(existing.id))).get();
+    return links.map((l) => l.tagId).toSet();
+  }
+
+  // -----------------------------------------------------------------
   // Sheets sync acknowledgement (local-only metadata).
   // -----------------------------------------------------------------
 
@@ -2156,11 +2234,13 @@ class FinancialTransactionRepository {
         );
   }
 
-  String _snapshotJson(FinancialTransaction row) {
+  String _snapshotJson(FinancialTransaction row, {Set<int>? tagIds}) {
     return jsonEncode(<String, Object?>{
       'uuid': row.uuid,
       'kind': row.kind,
       'categoryId': row.categoryId,
+      'merchantId': row.merchantId,
+      if (tagIds != null) 'tagIds': (tagIds.toList()..sort()),
       'reversesTransactionId': row.reversesTransactionId,
       'relatedTransactionId': row.relatedTransactionId,
       'sourceAccountId': row.sourceAccountId,

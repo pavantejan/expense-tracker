@@ -4,11 +4,17 @@ import '../../app/app_services.dart';
 import '../../data/repositories/ledger_query_service.dart';
 import '../common/ui.dart';
 import 'add_transaction_page.dart';
+import 'transaction_filter_sheet.dart';
 
 class AllTransactionsPage extends StatefulWidget {
-  const AllTransactionsPage({super.key, this.autoFocusSearch = false});
+  const AllTransactionsPage({
+    super.key,
+    this.autoFocusSearch = false,
+    this.initialFilter = const TransactionFilter(),
+  });
 
   final bool autoFocusSearch;
+  final TransactionFilter initialFilter;
 
   @override
   State<AllTransactionsPage> createState() => _AllTransactionsPageState();
@@ -18,6 +24,7 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
   String _query = '';
+  late TransactionFilter _filter = widget.initialFilter;
   AppServices? _services;
   Stream<List<TransactionView>>? _transactions;
 
@@ -49,6 +56,31 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
     super.dispose();
   }
 
+  Future<void> _openFilters() async {
+    final services = _services!;
+    final accounts = await services.accounts.listAccounts();
+    final categories = await services.categories.listCategories();
+    final merchants = await services.merchantsTags.listMerchants();
+    final tags = await services.merchantsTags.listTags();
+    if (!mounted) {
+      return;
+    }
+    final result = await showModalBottomSheet<TransactionFilter>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => TransactionFilterSheet(
+        initial: _filter,
+        accounts: accounts,
+        categories: categories,
+        merchants: merchants,
+        tags: tags,
+      ),
+    );
+    if (result != null) {
+      setState(() => _filter = result);
+    }
+  }
+
   Future<bool> _confirmDelete(TransactionView view) async {
     return await showDialog<bool>(
           context: context,
@@ -76,7 +108,21 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('All Transactions')),
+      appBar: AppBar(
+        title: const Text('All Transactions'),
+        actions: [
+          IconButton(
+            key: const Key('open-filters'),
+            tooltip: 'Filters',
+            onPressed: _openFilters,
+            icon: Badge(
+              isLabelVisible: !_filter.isEmpty,
+              label: Text('${_filter.activeCount}'),
+              child: const Icon(Icons.filter_list_rounded),
+            ),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -104,6 +150,26 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
                   setState(() => _query = value.trim().toLowerCase()),
             ),
           ),
+          if (!_filter.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${_filter.activeCount} filter(s) active',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton(
+                    key: const Key('clear-filters'),
+                    onPressed: () =>
+                        setState(() => _filter = const TransactionFilter()),
+                    child: const Text('Clear filters'),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: StreamBuilder<List<TransactionView>>(
               stream: _transactions,
@@ -112,21 +178,25 @@ class _AllTransactionsPageState extends State<AllTransactionsPage> {
                 if (all == null) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                final visible = _query.isEmpty
-                    ? all
-                    : all.where((v) => v.searchText.contains(_query)).toList();
+                final visible = all
+                    .where(
+                      (v) =>
+                          _filter.matches(v) &&
+                          (_query.isEmpty || v.searchText.contains(_query)),
+                    )
+                    .toList();
                 if (visible.isEmpty) {
                   return ListView(
                     padding: const EdgeInsets.all(16),
                     children: [
                       EmptyStateCard(
                         icon: Icons.receipt_long_outlined,
-                        title: _query.isEmpty
+                        title: _query.isEmpty && _filter.isEmpty
                             ? 'No transactions yet'
                             : 'No matches',
-                        message: _query.isEmpty
+                        message: _query.isEmpty && _filter.isEmpty
                             ? 'Transactions you add appear here.'
-                            : 'No transactions match "$_query".',
+                            : 'No transactions match your search or filters.',
                       ),
                     ],
                   );

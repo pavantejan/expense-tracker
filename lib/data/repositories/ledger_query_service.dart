@@ -10,6 +10,7 @@ import 'package:drift/drift.dart';
 import '../../core/domain/reporting.dart';
 import '../database/v2/app_database_v2.dart';
 import 'financial_transaction_repository.dart';
+import 'merchant_tag_repository.dart';
 
 /// How a transaction moved money from the user's point of view.
 enum DisplayFlow {
@@ -32,6 +33,8 @@ class TransactionView {
     this.account,
     this.sourceAccount,
     this.destinationAccount,
+    this.merchant,
+    this.tags = const [],
   });
 
   final FinancialTransaction transaction;
@@ -46,6 +49,8 @@ class TransactionView {
   final Account? account;
   final Account? sourceAccount;
   final Account? destinationAccount;
+  final Merchant? merchant;
+  final List<Tag> tags;
 
   String get uuid => transaction.uuid;
   String get kind => transaction.kind;
@@ -60,14 +65,104 @@ class TransactionView {
     account?.name,
     sourceAccount?.name,
     destinationAccount?.name,
+    merchant?.name,
+    ...tags.map((t) => t.name),
   ].whereType<String>().join(' ').toLowerCase();
 }
 
+/// Optional filters for the transaction list. Every set field must
+/// match; amounts compare integer minor units.
+class TransactionFilter {
+  const TransactionFilter({
+    this.from,
+    this.toInclusive,
+    this.categoryId,
+    this.accountUuid,
+    this.merchantUuid,
+    this.tagId,
+    this.minAmountMinorUnits,
+    this.maxAmountMinorUnits,
+    this.kinds = const {},
+  });
+
+  final DateTime? from;
+  final DateTime? toInclusive;
+  final String? categoryId;
+  final String? accountUuid;
+  final String? merchantUuid;
+  final int? tagId;
+  final int? minAmountMinorUnits;
+  final int? maxAmountMinorUnits;
+  final Set<String> kinds;
+
+  bool get isEmpty =>
+      from == null &&
+      toInclusive == null &&
+      categoryId == null &&
+      accountUuid == null &&
+      merchantUuid == null &&
+      tagId == null &&
+      minAmountMinorUnits == null &&
+      maxAmountMinorUnits == null &&
+      kinds.isEmpty;
+
+  int get activeCount => [
+    from != null || toInclusive != null,
+    categoryId != null,
+    accountUuid != null,
+    merchantUuid != null,
+    tagId != null,
+    minAmountMinorUnits != null || maxAmountMinorUnits != null,
+    kinds.isNotEmpty,
+  ].where((active) => active).length;
+
+  bool matches(TransactionView view) {
+    final tx = view.transaction;
+    final date = tx.occurredAt.toLocal();
+    final day = DateTime(date.year, date.month, date.day);
+    if (from != null && day.isBefore(from!)) {
+      return false;
+    }
+    if (toInclusive != null && day.isAfter(toInclusive!)) {
+      return false;
+    }
+    if (categoryId != null && tx.categoryId != categoryId) {
+      return false;
+    }
+    if (accountUuid != null &&
+        view.account?.uuid != accountUuid &&
+        view.sourceAccount?.uuid != accountUuid &&
+        view.destinationAccount?.uuid != accountUuid) {
+      return false;
+    }
+    if (merchantUuid != null && tx.merchantId != merchantUuid) {
+      return false;
+    }
+    if (tagId != null && !view.tags.any((t) => t.id == tagId)) {
+      return false;
+    }
+    if (minAmountMinorUnits != null &&
+        tx.amountMinorUnits < minAmountMinorUnits!) {
+      return false;
+    }
+    if (maxAmountMinorUnits != null &&
+        tx.amountMinorUnits > maxAmountMinorUnits!) {
+      return false;
+    }
+    if (kinds.isNotEmpty && !kinds.contains(tx.kind)) {
+      return false;
+    }
+    return true;
+  }
+}
+
 class LedgerQueryService {
-  LedgerQueryService(this._database, this._transactions);
+  LedgerQueryService(this._database, this._transactions)
+    : _merchantsTags = MerchantTagRepository(_database);
 
   final AppDatabaseV2 _database;
   final FinancialTransactionRepository _transactions;
+  final MerchantTagRepository _merchantsTags;
 
   /// Emits [load] now and again after every change to [tables].
   Stream<T> _watch<T>(
@@ -98,6 +193,9 @@ class LedgerQueryService {
         _database.postings,
         _database.accounts,
         _database.categories,
+        _database.merchants,
+        _database.tags,
+        _database.transactionTags,
       ],
       () => loadTransactions(
         from: from,
@@ -155,6 +253,11 @@ class LedgerQueryService {
       for (final c in await _database.select(_database.categories).get())
         c.categoryId: c,
     };
+    final merchants = {
+      for (final m in await _database.select(_database.merchants).get())
+        m.uuid: m,
+    };
+    final tagsByTx = await _merchantsTags.tagsByTransactionIds(ids);
     final reversed =
         (await (_database.select(_database.financialTransactions)..where(
                   (t) => t.kind.equals('reversal') & t.status.equals('active'),
@@ -199,6 +302,8 @@ class LedgerQueryService {
         account: account,
         sourceAccount: accounts[row.sourceAccountId],
         destinationAccount: accounts[row.destinationAccountId],
+        merchant: merchants[row.merchantId],
+        tags: tagsByTx[row.id] ?? const [],
       );
       if (accountUuid != null &&
           view.account?.uuid != accountUuid &&
